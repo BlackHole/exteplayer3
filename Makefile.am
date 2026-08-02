@@ -20,6 +20,7 @@ exteplayer3_SOURCES = \
     main/exteplayer.c \
     container/container.c \
     container/container_ffmpeg.c \
+    tools/hevc_hdr.c \
     manager/manager.c \
     manager/audio.c \
     manager/video.c \

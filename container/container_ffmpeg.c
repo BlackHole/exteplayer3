@@ -62,6 +62,13 @@
 #include "aac.h"
 #include "pcm.h"
 #include "ffmpeg_metadata.h"
+#include "hevc_hdr.h"
+
+static HevcHdrDetector g_hevc_hdr_detector;
+static int32_t g_hevc_hdr_av_idx = -1;
+static int32_t g_hevc_hdr_track_id = -1;
+static AVStream *g_hevc_hdr_stream = NULL;
+static int32_t g_hevc_hdr_type = HEVC_HDR_SDR;
 
 /* ***************************** */
 /* Makros/Constants              */
@@ -609,6 +616,88 @@ static char* searchMeta(void * metadata, char* ourTag)
 /* Worker Thread                */
 /* **************************** */
 
+int32_t container_ffmpeg_get_hevc_hdr_type(void)
+{
+    return g_hevc_hdr_type;
+}
+
+static void resetHevcHdrDetector(void)
+{
+    hevc_hdr_detector_reset(&g_hevc_hdr_detector);
+    g_hevc_hdr_av_idx = -1;
+    g_hevc_hdr_track_id = -1;
+    g_hevc_hdr_stream = NULL;
+}
+
+static void setHevcHdrType(Context_t *context, int hdr_type)
+{
+    if (hdr_type < HEVC_HDR_SDR || hdr_type > HEVC_HDR_GENERIC || hdr_type == g_hevc_hdr_type)
+        return;
+
+    g_hevc_hdr_type = hdr_type;
+    ffmpeg_printf(1, "HEVC HDR type changed to %d\n", hdr_type);
+    if (context && context->manager && context->manager->video)
+        context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
+}
+
+static void publishHevcHdr(Context_t *context)
+{
+    int hdr_type = hevc_hdr_detector_result(&g_hevc_hdr_detector);
+
+    if (hdr_type >= HEVC_HDR_SDR)
+        setHevcHdrType(context, hdr_type);
+}
+
+static void updateHevcHdr(Context_t *context, Track_t *track,
+                          uint32_t av_context_idx, AVPacket *packet)
+{
+#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(55, 92, 100)
+    AVStream *stream;
+
+    if (!context || !track || !packet || packet->size <= 0 ||
+        av_context_idx >= IPTV_AV_CONTEXT_MAX_NUM || !avContextTab[av_context_idx] ||
+        packet->stream_index < 0 ||
+        packet->stream_index >= (int)avContextTab[av_context_idx]->nb_streams)
+        return;
+
+    stream = avContextTab[av_context_idx]->streams[packet->stream_index];
+    if (!stream)
+        return;
+
+    if (g_hevc_hdr_stream != stream ||
+        g_hevc_hdr_av_idx != (int32_t)av_context_idx ||
+        g_hevc_hdr_track_id != track->Id)
+    {
+        resetHevcHdrDetector();
+        g_hevc_hdr_stream = stream;
+        g_hevc_hdr_av_idx = (int32_t)av_context_idx;
+        g_hevc_hdr_track_id = track->Id;
+        setHevcHdrType(context, HEVC_HDR_SDR);
+
+        if (get_codecpar(stream)->codec_id == AV_CODEC_ID_HEVC)
+        {
+            hevc_hdr_detector_configure(&g_hevc_hdr_detector,
+                                        get_codecpar(stream)->extradata,
+                                        (size_t)get_codecpar(stream)->extradata_size);
+            publishHevcHdr(context);
+        }
+    }
+
+    if (get_codecpar(stream)->codec_id == AV_CODEC_ID_HEVC &&
+        !g_hevc_hdr_detector.done)
+    {
+        hevc_hdr_detector_feed(&g_hevc_hdr_detector,
+                               packet->data, (size_t)packet->size);
+        publishHevcHdr(context);
+    }
+#else
+    (void)context;
+    (void)track;
+    (void)av_context_idx;
+    (void)packet;
+#endif
+}
+
 static void FFMPEGThread(Context_t *context)
 {
     char threadname[17];
@@ -887,6 +976,7 @@ static void FFMPEGThread(Context_t *context)
 
             if (videoTrack && (videoTrack->AVIdx == cAVIdx) && (videoTrack->Id == pid))
             {
+                updateHevcHdr(context, videoTrack, cAVIdx, &packet);
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
                 AVCodecContext *codec_context = videoTrack->avCodecCtx;
                 if (codec_context && codec_context->codec_id == AV_CODEC_ID_MPEG4 && NULL != mpeg4p2_context)

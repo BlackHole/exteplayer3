@@ -512,8 +512,8 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 }
                 else // video
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d,\"an\":%d,\"ad\":%d}}\n", \
-                    argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name, track->width, track->height, track->frame_rate, track->progressive, track->aspect_ratio_num, track->aspect_ratio_den);
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d,\"an\":%d,\"ad\":%d,\"hdr\":%d}}\n", \
+                    argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name, track->width, track->height, track->frame_rate, track->progressive, track->aspect_ratio_num, track->aspect_ratio_den, container_ffmpeg_get_hevc_hdr_type());
                 }
                 free(track->Encoding);
                 free(track->Name);
@@ -528,7 +528,7 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 }
                 else // video
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d}}\n", argvBuff[0], argvBuff[1], -1, "", "", -1, -1, 0, -1);
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d,\"hdr\":%d}}\n", argvBuff[0], argvBuff[1], -1, "", "", -1, -1, 0, -1, 0);
                 }
             }
             break;
