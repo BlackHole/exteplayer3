@@ -397,12 +397,15 @@ static const char* Codec2AudioDescription(int32_t codec_id, int profile)
             return "DTS Express";
 #endif
         return "DTS";
-    case AV_CODEC_ID_TRUEHD:
-#ifdef FF_PROFILE_TRUEHD_ATMOS
-        if (profile == FF_PROFILE_TRUEHD_ATMOS)
+    case AV_CODEC_ID_AC3:
+        return "Dolby Digital";
+    case AV_CODEC_ID_EAC3:
+#ifdef FF_PROFILE_EAC3_DDP_ATMOS
+        if (profile == FF_PROFILE_EAC3_DDP_ATMOS)
             return "Dolby Atmos";
 #endif
-        return "Dolby TrueHD";
+        return "Dolby Digital +";
+    case AV_CODEC_ID_TRUEHD:
     case AV_CODEC_ID_MLP:
         return "Dolby TrueHD";
     default:
