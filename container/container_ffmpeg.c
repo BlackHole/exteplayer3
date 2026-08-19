@@ -396,6 +396,14 @@ static const char* Codec2AudioDescription(int32_t codec_id, int profile)
         if (profile == FF_PROFILE_DTS_EXPRESS)
             return "DTS Express";
 #endif
+#ifdef FF_PROFILE_DTS_ES
+        if (profile == FF_PROFILE_DTS_ES)
+            return "DTS-ES";
+#endif
+#ifdef FF_PROFILE_DTS_96_24
+        if (profile == FF_PROFILE_DTS_96_24)
+            return "DTS 96/24";
+#endif
         return "DTS";
     case AV_CODEC_ID_AC3:
         return "Dolby Digital";
@@ -405,12 +413,119 @@ static const char* Codec2AudioDescription(int32_t codec_id, int profile)
             return "Dolby Atmos";
 #endif
         return "Dolby Digital +";
+    case AV_CODEC_ID_AC4:
+        return "Dolby AC-4";
     case AV_CODEC_ID_TRUEHD:
-    case AV_CODEC_ID_MLP:
         return "Dolby TrueHD";
+    case AV_CODEC_ID_MLP:
+        return "MLP";
+    case AV_CODEC_ID_MP2:
+        return "MP2";
+    case AV_CODEC_ID_MP3:
+        return "MP3";
+    case AV_CODEC_ID_AAC:
+    case AV_CODEC_ID_AAC_LATM:
+#ifdef FF_PROFILE_AAC_LOW
+        if (profile == FF_PROFILE_AAC_LOW)
+            return "AAC-LC";
+#endif
+#ifdef FF_PROFILE_MPEG2_AAC_LOW
+        if (profile == FF_PROFILE_MPEG2_AAC_LOW)
+            return "AAC-LC";
+#endif
+#ifdef FF_PROFILE_AAC_HE
+        if (profile == FF_PROFILE_AAC_HE)
+            return "HE-AAC";
+#endif
+#ifdef FF_PROFILE_MPEG2_AAC_HE
+        if (profile == FF_PROFILE_MPEG2_AAC_HE)
+            return "HE-AAC";
+#endif
+#ifdef FF_PROFILE_AAC_HE_V2
+        if (profile == FF_PROFILE_AAC_HE_V2)
+            return "HE-AAC v2";
+#endif
+#ifdef FF_PROFILE_AAC_LD
+        if (profile == FF_PROFILE_AAC_LD)
+            return "AAC-LD";
+#endif
+#ifdef FF_PROFILE_AAC_ELD
+        if (profile == FF_PROFILE_AAC_ELD)
+            return "AAC-ELD";
+#endif
+#ifdef FF_PROFILE_AAC_USAC
+        if (profile == FF_PROFILE_AAC_USAC)
+            return "xHE-AAC";
+#endif
+        return "AAC";
+    case AV_CODEC_ID_WMAV1:
+    case AV_CODEC_ID_WMAV2:
+        return "WMA";
+    case AV_CODEC_ID_WMAPRO:
+        return "WMA Pro";
+    case AV_CODEC_ID_WMALOSSLESS:
+        return "WMA Lossless";
+    case AV_CODEC_ID_RA_144:
+        return "RealAudio 14.4";
+    case AV_CODEC_ID_RA_288:
+        return "RealAudio 28.8";
+    case AV_CODEC_ID_FLAC:
+        return "FLAC";
+    case AV_CODEC_ID_PCM_S8:
+    case AV_CODEC_ID_PCM_U8:
+    case AV_CODEC_ID_PCM_S16LE:
+    case AV_CODEC_ID_PCM_S16BE:
+    case AV_CODEC_ID_PCM_U16LE:
+    case AV_CODEC_ID_PCM_U16BE:
+    case AV_CODEC_ID_PCM_S24LE:
+    case AV_CODEC_ID_PCM_S24BE:
+    case AV_CODEC_ID_PCM_U24LE:
+    case AV_CODEC_ID_PCM_U24BE:
+    case AV_CODEC_ID_PCM_S32LE:
+    case AV_CODEC_ID_PCM_S32BE:
+    case AV_CODEC_ID_PCM_U32LE:
+    case AV_CODEC_ID_PCM_U32BE:
+        return "PCM";
+    case AV_CODEC_ID_AMR_NB:
+        return "AMR";
+    case AV_CODEC_ID_AMR_WB:
+        return "AMR-WB";
+    case AV_CODEC_ID_VORBIS:
+        return "Vorbis";
+    case AV_CODEC_ID_OPUS:
+        return "Opus";
     default:
-        return NULL;
+        break;
     }
+
+    const char *name = avcodec_get_name((enum AVCodecID)codec_id);
+    if (!name)
+        return NULL;
+
+    if (!strcmp(name, "mp1"))
+        return "MPEG Layer I";
+    if (!strcmp(name, "alac"))
+        return "ALAC";
+    if (!strcmp(name, "wavpack"))
+        return "WavPack";
+    if (!strcmp(name, "ape"))
+        return "APE";
+    if (!strcmp(name, "tta"))
+        return "TTA";
+    if (!strcmp(name, "speex"))
+        return "Speex";
+    if (!strcmp(name, "pcm_alaw"))
+        return "A-law";
+    if (!strcmp(name, "pcm_mulaw"))
+        return "mu-law";
+    if (!strcmp(name, "pcm_dvd") || !strcmp(name, "pcm_bluray"))
+        return "LPCM";
+    if (!strncmp(name, "pcm_", 4))
+        return "PCM";
+    if (!strncmp(name, "dsd_", 4))
+        return "DSD";
+
+    return name;
 }
 
 static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extradata, int extradata_size, int profile, int32_t *version)
