@@ -135,7 +135,8 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
 
             tracklist[j].Id = Tracks[i].Id;
             tracklist[j].Name = strdup(Tracks[i].Name);
-            tracklist[j].Encoding = strdup(Tracks[i].Encoding);
+            tracklist[j].Encoding = strdup(Tracks[i].Description ? Tracks[i].Description : Tracks[i].Encoding);
+            tracklist[j].channels = Tracks[i].channels;
             ++j;
         }
         tracklist[j].Id = -1;
@@ -233,7 +234,8 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
                 memset(track, 0, sizeof(TrackDescription_t));
                 track->Id       = Tracks[CurrentTrack].Id;
                 track->Name     = strdup(Tracks[CurrentTrack].Name);
-                track->Encoding = strdup(Tracks[CurrentTrack].Encoding);
+                track->Encoding = strdup(Tracks[CurrentTrack].Description ? Tracks[CurrentTrack].Description : Tracks[CurrentTrack].Encoding);
+                track->channels = Tracks[CurrentTrack].channels;
             }
         }
         else
@@ -260,7 +262,7 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
     {
         if ((TrackCount > 0) && (CurrentTrack >=0))
         {
-            *((char**)argument) = (char *)strdup(Tracks[CurrentTrack].Encoding);
+            *((char**)argument) = (char *)strdup(Tracks[CurrentTrack].OutputEncoding ? Tracks[CurrentTrack].OutputEncoding : Tracks[CurrentTrack].Encoding);
         }
         else
         {

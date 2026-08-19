@@ -49,6 +49,7 @@
 #include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
 #include <libavutil/opt.h>
+#include <libavutil/audio_fifo.h>
 //#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 0, 100)
 #include <libavcodec/bsf.h>
 #include <libavcodec/avcodec.h>
@@ -241,6 +242,8 @@ static int32_t ac3_software_decode = 0;
 static int32_t eac3_software_decode = 0;
 static int32_t dts_software_decode = 0;
 static int32_t truehd_software_decode = 0;
+static int32_t dts_ac3_transcode = 0;
+static int32_t truehd_ac3_transcode = 0;
 static int32_t amr_software_decode = 1;
 static int32_t vorbis_software_decode = 1;
 static int32_t opus_software_decode = 1;
@@ -308,6 +311,16 @@ void truehd_software_decoder_set(const int32_t val)
     truehd_software_decode = val;
 }
 
+void dts_ac3_transcoder_set(const int32_t val)
+{
+    dts_ac3_transcode = val;
+}
+
+void truehd_ac3_transcoder_set(const int32_t val)
+{
+    truehd_ac3_transcode = val;
+}
+
 void amr_software_decoder_set(const int32_t val)
 {
     amr_software_decode = val;
@@ -356,6 +369,45 @@ void flv2mpeg4_converter_set(const int32_t val)
 int32_t ffmpeg_av_dict_set(const char *key, const char *value, int32_t flags)
 {
     return av_dict_set(&g_avio_opts, key, value, flags);
+}
+
+static const char* Codec2AudioDescription(int32_t codec_id, int profile)
+{
+    switch (codec_id)
+    {
+    case AV_CODEC_ID_DTS:
+#ifdef FF_PROFILE_DTS_HD_MA_X_IMAX
+        if (profile == FF_PROFILE_DTS_HD_MA_X_IMAX)
+            return "DTS:X IMAX";
+#endif
+#ifdef FF_PROFILE_DTS_HD_MA_X
+        if (profile == FF_PROFILE_DTS_HD_MA_X)
+            return "DTS:X";
+#endif
+#ifdef FF_PROFILE_DTS_HD_MA
+        if (profile == FF_PROFILE_DTS_HD_MA)
+            return "DTS-HD MA";
+#endif
+#ifdef FF_PROFILE_DTS_HD_HRA
+        if (profile == FF_PROFILE_DTS_HD_HRA)
+            return "DTS-HD HRA";
+#endif
+#ifdef FF_PROFILE_DTS_EXPRESS
+        if (profile == FF_PROFILE_DTS_EXPRESS)
+            return "DTS Express";
+#endif
+        return "DTS";
+    case AV_CODEC_ID_TRUEHD:
+#ifdef FF_PROFILE_TRUEHD_ATMOS
+        if (profile == FF_PROFILE_TRUEHD_ATMOS)
+            return "Dolby Atmos";
+#endif
+        return "Dolby TrueHD";
+    case AV_CODEC_ID_MLP:
+        return "Dolby TrueHD";
+    default:
+        return NULL;
+    }
 }
 
 static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extradata, int extradata_size, int profile, int32_t *version)
@@ -577,6 +629,287 @@ static int64_t calcPts(uint32_t avContextIdx, AVStream *stream, int64_t pts)
     return doCalcPts(avContextTab[avContextIdx]->start_time, stream->time_base, pts);
 }
 
+typedef struct
+{
+    AVCodecContext *encoder;
+    SwrContext *swr;
+    AVAudioFifo *fifo;
+    int64_t next_pts;
+    int track_id;
+} AC3TranscoderState;
+
+static void AC3TranscoderClose(AC3TranscoderState *state)
+{
+    if (!state)
+        return;
+
+    if (state->fifo)
+        av_audio_fifo_free(state->fifo);
+    state->fifo = NULL;
+
+    if (state->swr)
+        swr_free(&state->swr);
+
+    if (state->encoder)
+        avcodec_free_context(&state->encoder);
+
+    state->next_pts = INVALID_PTS_VALUE;
+    state->track_id = -1;
+}
+
+static int AC3TranscoderInit(AC3TranscoderState *state, AVCodecContext *decoder, int track_id)
+{
+    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AC3);
+    int ret;
+
+    if (!state || !decoder || !codec)
+    {
+        ffmpeg_err("AC3 encoder unavailable\n");
+        return -1;
+    }
+
+    state->encoder = avcodec_alloc_context3(codec);
+    if (!state->encoder)
+        return -1;
+
+    state->encoder->bit_rate = 640000;
+    state->encoder->sample_rate = 48000;
+    state->encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
+    if (codec->sample_fmts)
+    {
+        const enum AVSampleFormat *fmt = codec->sample_fmts;
+        state->encoder->sample_fmt = *fmt;
+        while (*fmt != AV_SAMPLE_FMT_NONE)
+        {
+            if (*fmt == AV_SAMPLE_FMT_FLTP)
+            {
+                state->encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
+                break;
+            }
+            ++fmt;
+        }
+    }
+    state->encoder->time_base = (AVRational){1, 48000};
+#if HAVE_CH_LAYOUT
+    av_channel_layout_from_mask(&state->encoder->ch_layout, AV_CH_LAYOUT_5POINT1);
+#else
+    state->encoder->channel_layout = AV_CH_LAYOUT_5POINT1;
+    state->encoder->channels = 6;
+#endif
+
+    ret = avcodec_open2(state->encoder, codec, NULL);
+    if (ret < 0)
+    {
+        ffmpeg_err("AC3 encoder init failed: %d\n", ret);
+        AC3TranscoderClose(state);
+        return -1;
+    }
+
+    state->swr = swr_alloc();
+    if (!state->swr)
+    {
+        AC3TranscoderClose(state);
+        return -1;
+    }
+
+#if HAVE_CH_LAYOUT
+    AVChannelLayout in_layout = {0};
+    av_channel_layout_copy(&in_layout, &decoder->ch_layout);
+    if (!av_channel_layout_check(&in_layout))
+    {
+        av_channel_layout_uninit(&in_layout);
+        av_channel_layout_default(&in_layout, decoder->ch_layout.nb_channels);
+    }
+    av_opt_set_chlayout(state->swr, "in_chlayout", &in_layout, 0);
+    av_opt_set_chlayout(state->swr, "out_chlayout", &state->encoder->ch_layout, 0);
+    av_channel_layout_uninit(&in_layout);
+#else
+    uint64_t in_layout = decoder->channel_layout;
+    if (!in_layout)
+        in_layout = av_get_default_channel_layout(decoder->channels);
+    av_opt_set_int(state->swr, "in_channel_layout", in_layout, 0);
+    av_opt_set_int(state->swr, "out_channel_layout", AV_CH_LAYOUT_5POINT1, 0);
+#endif
+    av_opt_set_sample_fmt(state->swr, "in_sample_fmt", decoder->sample_fmt, 0);
+    av_opt_set_sample_fmt(state->swr, "out_sample_fmt", state->encoder->sample_fmt, 0);
+    av_opt_set_int(state->swr, "in_sample_rate", decoder->sample_rate, 0);
+    av_opt_set_int(state->swr, "out_sample_rate", state->encoder->sample_rate, 0);
+    av_opt_set_double(state->swr, "rematrix_maxval", 1.0, 0);
+
+    ret = swr_init(state->swr);
+    if (ret < 0)
+    {
+        ffmpeg_err("AC3 resampler init failed: %d\n", ret);
+        AC3TranscoderClose(state);
+        return -1;
+    }
+
+    if (state->encoder->frame_size <= 0)
+    {
+        ffmpeg_err("AC3 encoder returned invalid frame size\n");
+        AC3TranscoderClose(state);
+        return -1;
+    }
+
+    state->fifo = av_audio_fifo_alloc(state->encoder->sample_fmt, 6, state->encoder->frame_size * 2);
+    if (!state->fifo)
+    {
+        AC3TranscoderClose(state);
+        return -1;
+    }
+
+    state->next_pts = INVALID_PTS_VALUE;
+    state->track_id = track_id;
+    ffmpeg_printf(1, "AC3 transcoder ready: 5.1 48kHz 640kbit/s\n");
+    return 0;
+}
+
+static int AC3TranscoderWriteFrame(AC3TranscoderState *state, Context_t *context, int64_t pts)
+{
+    AVFrame *frame = wrapped_frame_alloc();
+    int ret;
+
+    if (!frame)
+        return -1;
+
+    frame->nb_samples = state->encoder->frame_size;
+    frame->format = state->encoder->sample_fmt;
+    frame->sample_rate = state->encoder->sample_rate;
+#if HAVE_CH_LAYOUT
+    av_channel_layout_copy(&frame->ch_layout, &state->encoder->ch_layout);
+#else
+    frame->channel_layout = state->encoder->channel_layout;
+    frame->channels = state->encoder->channels;
+#endif
+
+    ret = av_samples_alloc(frame->data, &frame->linesize[0], 6, frame->nb_samples, state->encoder->sample_fmt, 0);
+    if (ret < 0)
+    {
+        wrapped_frame_free(&frame);
+        return -1;
+    }
+    frame->extended_data = frame->data;
+
+    if (av_audio_fifo_read(state->fifo, (void **)frame->extended_data, frame->nb_samples) < frame->nb_samples)
+    {
+        av_freep(&frame->data[0]);
+        wrapped_frame_free(&frame);
+        return -1;
+    }
+
+#if LIBAVCODEC_VERSION_MAJOR >= 57
+    ret = avcodec_send_frame(state->encoder, frame);
+    if (ret >= 0)
+    {
+        AVPacket *encoded = av_packet_alloc();
+        if (!encoded)
+        {
+            av_freep(&frame->data[0]);
+            wrapped_frame_free(&frame);
+            return -1;
+        }
+
+        while ((ret = avcodec_receive_packet(state->encoder, encoded)) >= 0)
+        {
+            AudioVideoOut_t out = {0};
+            out.data = encoded->data;
+            out.len = encoded->size;
+            out.pts = pts;
+            out.type = "audio";
+            if (!context->playback->BackWard && Write(context->output->audio->Write, context, &out, pts) < 0)
+                ret = -1;
+            av_packet_unref(encoded);
+            if (ret < 0)
+                break;
+        }
+        av_packet_free(&encoded);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            ret = 0;
+    }
+#else
+    AVPacket encoded;
+    int got_packet = 0;
+    av_init_packet(&encoded);
+    encoded.data = NULL;
+    encoded.size = 0;
+    ret = avcodec_encode_audio2(state->encoder, &encoded, frame, &got_packet);
+    if (ret >= 0 && got_packet)
+    {
+        AudioVideoOut_t out = {0};
+        out.data = encoded.data;
+        out.len = encoded.size;
+        out.pts = pts;
+        out.type = "audio";
+        if (!context->playback->BackWard && Write(context->output->audio->Write, context, &out, pts) < 0)
+            ret = -1;
+        av_free_packet(&encoded);
+    }
+#endif
+
+    av_freep(&frame->data[0]);
+    wrapped_frame_free(&frame);
+    return ret < 0 ? -1 : 0;
+}
+
+static int AC3TranscoderProcess(AC3TranscoderState *state, Context_t *context, AVCodecContext *decoder, Track_t *track, AVFrame *decoded, uint32_t av_context_idx, int64_t packet_pts)
+{
+    uint8_t **converted = NULL;
+    int converted_linesize = 0;
+    int out_samples;
+    int ret;
+
+    if (!state->encoder || state->track_id != track->Id)
+    {
+        AC3TranscoderClose(state);
+        if (AC3TranscoderInit(state, decoder, track->Id) < 0)
+            return -1;
+    }
+
+    if (state->next_pts == INVALID_PTS_VALUE)
+    {
+        state->next_pts = calcPts(av_context_idx, track->stream, wrapped_frame_get_best_effort_timestamp(decoded));
+        if (state->next_pts == INVALID_PTS_VALUE)
+            state->next_pts = packet_pts;
+    }
+
+    out_samples = av_rescale_rnd(swr_get_delay(state->swr, decoder->sample_rate) + decoded->nb_samples,
+                                 state->encoder->sample_rate, decoder->sample_rate, AV_ROUND_UP);
+    ret = av_samples_alloc_array_and_samples(&converted, &converted_linesize, 6, out_samples,
+                                             state->encoder->sample_fmt, 0);
+    if (ret < 0)
+        return -1;
+
+    out_samples = swr_convert(state->swr, converted, out_samples,
+                              (const uint8_t **)decoded->extended_data, decoded->nb_samples);
+    if (out_samples < 0)
+    {
+        av_freep(&converted[0]);
+        av_freep(&converted);
+        return -1;
+    }
+
+    if (av_audio_fifo_write(state->fifo, (void **)converted, out_samples) < out_samples)
+    {
+        av_freep(&converted[0]);
+        av_freep(&converted);
+        return -1;
+    }
+
+    av_freep(&converted[0]);
+    av_freep(&converted);
+
+    while (av_audio_fifo_size(state->fifo) >= state->encoder->frame_size)
+    {
+        int64_t frame_pts = state->next_pts;
+        if (AC3TranscoderWriteFrame(state, context, frame_pts) < 0)
+            return -1;
+        if (state->next_pts != INVALID_PTS_VALUE)
+            state->next_pts += av_rescale(state->encoder->frame_size, 90000, state->encoder->sample_rate);
+    }
+
+    return 0;
+}
+
 /* search for metatdata in context and stream
  * and map it to our metadata.
  */
@@ -726,6 +1059,9 @@ static void FFMPEGThread(Context_t *context)
     g_context = context;
 
     SwrContext *swr = NULL;
+    AC3TranscoderState ac3Transcoder = {0};
+    ac3Transcoder.next_pts = INVALID_PTS_VALUE;
+    ac3Transcoder.track_id = -1;
     AVFrame *decoded_frame = NULL;
     int32_t out_sample_rate = 44100;
     int ac4_immersive_ok = 0;   /* librempeg AC-4 may fill only ch[0] — promote once others wake */
@@ -1123,6 +1459,9 @@ static void FFMPEGThread(Context_t *context)
                 uint32_t audioExtradataSize = get_codecpar(audioTrack->stream)->extradata_size;
 
                 ffmpeg_printf(200, "AudioTrack index = %d\n",pid);
+                if (!audioTrack->transcode_to_ac3 && ac3Transcoder.encoder)
+                    AC3TranscoderClose(&ac3Transcoder);
+
                 if (audioTrack->inject_raw_pcm == 1)
                 {
                     ffmpeg_printf(200,"write audio raw pcm\n");
@@ -1144,7 +1483,7 @@ static void FFMPEGThread(Context_t *context)
                         ffmpeg_err("(raw pcm) writing data to audio device failed\n");
                     }
                 }
-                else if (audioTrack->inject_as_pcm == 1 && audioTrack->avCodecCtx)
+                else if ((audioTrack->inject_as_pcm == 1 || audioTrack->transcode_to_ac3 == 1) && audioTrack->avCodecCtx)
                 {
                     AVCodecContext *c = audioTrack->avCodecCtx;
 
@@ -1161,6 +1500,7 @@ static void FFMPEGThread(Context_t *context)
                             wrapped_frame_free(&decoded_frame);
                             decoded_frame = NULL;
                         }
+                        AC3TranscoderClose(&ac3Transcoder);
                     }
 #if (LIBAVFORMAT_VERSION_MAJOR > 57) || ((LIBAVFORMAT_VERSION_MAJOR == 57) && (LIBAVFORMAT_VERSION_MINOR > 32))
                     while (packet.size > 0 || (!packet.size && !packet.data))
@@ -1229,6 +1569,17 @@ static void FFMPEGThread(Context_t *context)
                             continue;
                         }
 #endif
+                        if (audioTrack->transcode_to_ac3)
+                        {
+                            if (AC3TranscoderProcess(&ac3Transcoder, context, c, audioTrack, decoded_frame, cAVIdx, pts) < 0)
+                            {
+                                ffmpeg_err("AC3 transcoding failed\n");
+                                restart_audio_resampling = 1;
+                                break;
+                            }
+                            continue;
+                        }
+
                         int32_t e = 0;
                         if (!swr)
                         {
@@ -1599,6 +1950,8 @@ static void FFMPEGThread(Context_t *context)
     {
         wrapped_frame_free(&decoded_frame);
     }
+
+    AC3TranscoderClose(&ac3Transcoder);
 
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
     mpeg4p2_context_close(mpeg4p2_context);
@@ -2504,6 +2857,18 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     ffmpeg_printf(10, "Language %s\n", track.Name);
 
                     track.Encoding       = encoding;
+                    track.Description    = (char *)Codec2AudioDescription(get_codecpar(stream)->codec_id, get_codecpar(stream)->profile);
+                    track.OutputEncoding = NULL;
+#if HAVE_CH_LAYOUT
+                    track.channels       = get_codecpar(stream)->ch_layout.nb_channels;
+#else
+                    track.channels       = get_codecpar(stream)->channels;
+#endif
+                    track.transcode_to_ac3 =
+                        (get_codecpar(stream)->codec_id == AV_CODEC_ID_DTS && dts_ac3_transcode) ||
+                        ((get_codecpar(stream)->codec_id == AV_CODEC_ID_TRUEHD || get_codecpar(stream)->codec_id == AV_CODEC_ID_MLP) && truehd_ac3_transcode);
+                    if (track.transcode_to_ac3)
+                        track.OutputEncoding = "A_AC3";
                     track.stream         = stream;
                     track.Id             = ((AVStream *) (track.stream))->id;
                     track.aacbuf         = 0;
@@ -2516,9 +2881,9 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                         track.duration = (int64_t) avContext->duration / 1000;
                     }
 
-                    if(!strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
+                    if(track.transcode_to_ac3 || !strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
                     {
-                        track.inject_as_pcm = 1;
+                        track.inject_as_pcm = track.transcode_to_ac3 ? 0 : 1;
                         track.avCodecCtx = wrapped_avcodec_get_context(cAVIdx, stream);
                         if (track.avCodecCtx)
                         {
