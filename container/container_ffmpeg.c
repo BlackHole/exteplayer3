@@ -1687,6 +1687,27 @@ static void FFMPEGThread(Context_t *context)
                             continue;
                         }
 #endif
+                        /* audioTrack->channels was set once from the container's
+                         * initial stream probe (AVCodecParameters), which does
+                         * not track mid-stream channel-layout changes - e.g. a
+                         * broadcast swapping 5.1 program audio for 2.0 stereo
+                         * ad audio on the same elementary stream. The actual
+                         * decoded frame is the authoritative live source, so
+                         * keep audioTrack->channels in sync with it here. This
+                         * is a same-layer struct update (Track_t, shared with
+                         * manager/audio.c's Tracks[]), not a cross-layer push -
+                         * the next "ac" query picks it up naturally. */
+#if HAVE_CH_LAYOUT
+                        int decoded_channels = decoded_frame->ch_layout.nb_channels;
+#else
+                        int decoded_channels = decoded_frame->channels;
+#endif
+                        if (decoded_channels > 0 && audioTrack->channels != decoded_channels)
+                        {
+                            ffmpeg_printf(10, "audio channel count changed %d -> %d\n",
+                                audioTrack->channels, decoded_channels);
+                            audioTrack->channels = decoded_channels;
+                        }
                         if (audioTrack->transcode_to_ac3)
                         {
                             if (AC3TranscoderProcess(&ac3Transcoder, context, c, audioTrack, decoded_frame, cAVIdx, pts) < 0)
