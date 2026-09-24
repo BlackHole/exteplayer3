@@ -1184,7 +1184,7 @@ int main(int argc, char* argv[])
             }
             case 'r':
             {
-                commandRetVal = g_player->output->Command(g_player, OUTPUT_CLEAR, "s");
+                commandRetVal = g_player->output->Command(g_player, OUTPUT_CLEAR, "v");
                 break;
             }
             case 'p':
