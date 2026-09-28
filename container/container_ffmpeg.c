@@ -321,6 +321,13 @@ void truehd_ac3_transcoder_set(const int32_t val)
     truehd_ac3_transcode = val;
 }
 
+static int32_t aac_he_transcode = 0;
+
+void aac_he_transcoder_set(const int32_t val)
+{
+    aac_he_transcode = val;
+}
+
 void amr_software_decoder_set(const int32_t val)
 {
     amr_software_decode = val;
@@ -756,6 +763,392 @@ typedef struct
     int track_id;
 } AC3TranscoderState;
 
+/* HE-AAC is decoded by FFmpeg and re-encoded as plain AAC-LC before it reaches
+ * the hardware AAC writer.  This also catches streams where the AAC profile
+ * is reported as LC but the AudioSpecificConfig carries SBR/PS signalling. */
+static int IsHEAACStream(AVStream *stream)
+{
+    if (!stream || (get_codecpar(stream)->codec_id != AV_CODEC_ID_AAC &&
+                    get_codecpar(stream)->codec_id != AV_CODEC_ID_AAC_LATM))
+        return 0;
+
+#ifdef FF_PROFILE_AAC_HE
+    if (get_codecpar(stream)->profile == FF_PROFILE_AAC_HE)
+        return 1;
+#endif
+#ifdef FF_PROFILE_MPEG2_AAC_HE
+    if (get_codecpar(stream)->profile == FF_PROFILE_MPEG2_AAC_HE)
+        return 1;
+#endif
+#ifdef FF_PROFILE_AAC_HE_V2
+    if (get_codecpar(stream)->profile == FF_PROFILE_AAC_HE_V2)
+        return 1;
+#endif
+
+    if (get_codecpar(stream)->extradata && get_codecpar(stream)->extradata_size >= 2)
+    {
+        MPEG4AudioConfig m4ac;
+        if (avpriv_mpeg4audio_get_config(&m4ac, get_codecpar(stream)->extradata,
+                                         get_codecpar(stream)->extradata_size * 8, 1) >= 0)
+        {
+            if (m4ac.sbr || m4ac.ps)
+                return 1;
+        }
+    }
+
+    return 0;
+}
+
+typedef struct
+{
+    AVCodecContext *encoder;
+    SwrContext *swr;
+    AVAudioFifo *fifo;
+    int64_t next_pts;
+    int track_id;
+} AACLCTranscoderState;
+
+static void AACLCTranscoderClose(AACLCTranscoderState *state)
+{
+    if (!state)
+        return;
+
+    if (state->fifo)
+        av_audio_fifo_free(state->fifo);
+    state->fifo = NULL;
+
+    if (state->swr)
+        swr_free(&state->swr);
+
+    if (state->encoder)
+        avcodec_free_context(&state->encoder);
+
+    state->next_pts = INVALID_PTS_VALUE;
+    state->track_id = -1;
+}
+
+static int AACLCTranscoderInit(AACLCTranscoderState *state, AVCodecContext *decoder, int track_id)
+{
+    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    int ret;
+    int channels;
+
+    if (!state || !decoder || !codec)
+    {
+        ffmpeg_err("AAC-LC encoder unavailable\n");
+        return -1;
+    }
+
+#if HAVE_CH_LAYOUT
+    channels = decoder->ch_layout.nb_channels;
+#else
+    channels = decoder->channels;
+#endif
+    if (channels <= 0 || get_chan_config(channels) == 0)
+    {
+        ffmpeg_err("AAC-LC encoder unsupported channel count: %d\n", channels);
+        return -1;
+    }
+
+    state->encoder = avcodec_alloc_context3(codec);
+    if (!state->encoder)
+        return -1;
+
+    state->encoder->bit_rate = 128000;
+    state->encoder->sample_rate = decoder->sample_rate;
+    state->encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
+    if (codec->sample_fmts)
+    {
+        const enum AVSampleFormat *fmt = codec->sample_fmts;
+        state->encoder->sample_fmt = *fmt;
+        while (*fmt != AV_SAMPLE_FMT_NONE)
+        {
+            if (*fmt == AV_SAMPLE_FMT_FLTP)
+            {
+                state->encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
+                break;
+            }
+            ++fmt;
+        }
+    }
+    state->encoder->profile = FF_PROFILE_AAC_LOW;
+    state->encoder->time_base = (AVRational){1, state->encoder->sample_rate};
+#if HAVE_CH_LAYOUT
+    av_channel_layout_copy(&state->encoder->ch_layout, &decoder->ch_layout);
+    if (!av_channel_layout_check(&state->encoder->ch_layout))
+        av_channel_layout_default(&state->encoder->ch_layout, channels);
+#else
+    state->encoder->channels = channels;
+    state->encoder->channel_layout = decoder->channel_layout ? decoder->channel_layout : av_get_default_channel_layout(channels);
+#endif
+
+    ret = avcodec_open2(state->encoder, codec, NULL);
+    if (ret < 0)
+    {
+        ffmpeg_err("AAC-LC encoder init failed: %d\n", ret);
+        AACLCTranscoderClose(state);
+        return -1;
+    }
+
+    state->swr = swr_alloc();
+    if (!state->swr)
+    {
+        AACLCTranscoderClose(state);
+        return -1;
+    }
+
+#if HAVE_CH_LAYOUT
+    AVChannelLayout in_layout = {0};
+    av_channel_layout_copy(&in_layout, &decoder->ch_layout);
+    if (!av_channel_layout_check(&in_layout))
+    {
+        av_channel_layout_uninit(&in_layout);
+        av_channel_layout_default(&in_layout, channels);
+    }
+    av_opt_set_chlayout(state->swr, "in_chlayout", &in_layout, 0);
+    av_opt_set_chlayout(state->swr, "out_chlayout", &state->encoder->ch_layout, 0);
+    av_channel_layout_uninit(&in_layout);
+#else
+    uint64_t in_layout = decoder->channel_layout;
+    if (!in_layout)
+        in_layout = av_get_default_channel_layout(decoder->channels);
+    av_opt_set_int(state->swr, "in_channel_layout", in_layout, 0);
+    av_opt_set_int(state->swr, "out_channel_layout", state->encoder->channel_layout, 0);
+#endif
+    av_opt_set_sample_fmt(state->swr, "in_sample_fmt", decoder->sample_fmt, 0);
+    av_opt_set_sample_fmt(state->swr, "out_sample_fmt", state->encoder->sample_fmt, 0);
+    av_opt_set_int(state->swr, "in_sample_rate", decoder->sample_rate, 0);
+    av_opt_set_int(state->swr, "out_sample_rate", state->encoder->sample_rate, 0);
+
+    ret = swr_init(state->swr);
+    if (ret < 0)
+    {
+        ffmpeg_err("AAC-LC resampler init failed: %d\n", ret);
+        AACLCTranscoderClose(state);
+        return -1;
+    }
+
+    if (state->encoder->frame_size <= 0)
+    {
+        ffmpeg_err("AAC-LC encoder returned invalid frame size\n");
+        AACLCTranscoderClose(state);
+        return -1;
+    }
+
+    state->fifo = av_audio_fifo_alloc(state->encoder->sample_fmt, channels, state->encoder->frame_size * 2);
+    if (!state->fifo)
+    {
+        AACLCTranscoderClose(state);
+        return -1;
+    }
+
+    state->next_pts = INVALID_PTS_VALUE;
+    state->track_id = track_id;
+    ffmpeg_printf(1, "AAC-LC transcoder ready: %d channels %dHz 128kbit/s\n", channels, state->encoder->sample_rate);
+    return 0;
+}
+
+static int AACLCTranscoderWriteFrame(AACLCTranscoderState *state, Context_t *context, int64_t pts)
+{
+    AVFrame *frame = wrapped_frame_alloc();
+    int ret;
+    int channels;
+    int chan_config;
+    int sample_index;
+
+    if (!frame)
+        return -1;
+
+#if HAVE_CH_LAYOUT
+    channels = state->encoder->ch_layout.nb_channels;
+#else
+    channels = state->encoder->channels;
+#endif
+    chan_config = get_chan_config(channels);
+    sample_index = aac_get_sample_rate_index(state->encoder->sample_rate);
+    if (chan_config == 0 || sample_index < 0 || sample_index > 12)
+    {
+        wrapped_frame_free(&frame);
+        return -1;
+    }
+
+    frame->nb_samples = state->encoder->frame_size;
+    frame->format = state->encoder->sample_fmt;
+    frame->sample_rate = state->encoder->sample_rate;
+#if HAVE_CH_LAYOUT
+    av_channel_layout_copy(&frame->ch_layout, &state->encoder->ch_layout);
+#else
+    frame->channel_layout = state->encoder->channel_layout;
+    frame->channels = state->encoder->channels;
+#endif
+
+    ret = av_samples_alloc(frame->data, &frame->linesize[0], channels, frame->nb_samples, state->encoder->sample_fmt, 0);
+    if (ret < 0)
+    {
+        wrapped_frame_free(&frame);
+        return -1;
+    }
+    frame->extended_data = frame->data;
+
+    if (av_audio_fifo_read(state->fifo, (void **)frame->extended_data, frame->nb_samples) < frame->nb_samples)
+    {
+        av_freep(&frame->data[0]);
+        wrapped_frame_free(&frame);
+        return -1;
+    }
+
+#if LIBAVCODEC_VERSION_MAJOR >= 57
+    ret = avcodec_send_frame(state->encoder, frame);
+    if (ret >= 0)
+    {
+        AVPacket *encoded = av_packet_alloc();
+        if (!encoded)
+        {
+            av_freep(&frame->data[0]);
+            wrapped_frame_free(&frame);
+            return -1;
+        }
+
+        while ((ret = avcodec_receive_packet(state->encoder, encoded)) >= 0)
+        {
+            int adts_len = encoded->size + AAC_HEADER_LENGTH;
+            uint8_t *adts = av_malloc(adts_len);
+            if (!adts)
+            {
+                ret = -1;
+                av_packet_unref(encoded);
+                break;
+            }
+
+            adts[0] = 0xFF;
+            adts[1] = 0xF1;
+            adts[2] = (1 << 6) | (sample_index << 2) | ((chan_config >> 2) & 1);
+            adts[3] = ((chan_config & 3) << 6) | ((adts_len >> 11) & 3);
+            adts[4] = (adts_len >> 3) & 0xFF;
+            adts[5] = ((adts_len & 7) << 5) | 0x1F;
+            adts[6] = 0xFC;
+            memcpy(adts + AAC_HEADER_LENGTH, encoded->data, encoded->size);
+
+            AudioVideoOut_t out = {0};
+            out.data = adts;
+            out.len = adts_len;
+            out.pts = pts;
+            out.type = "audio";
+            if (!context->playback->BackWard && Write(context->output->audio->Write, context, &out, pts) < 0)
+                ret = -1;
+            av_free(adts);
+            av_packet_unref(encoded);
+            if (ret < 0)
+                break;
+        }
+        av_packet_free(&encoded);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            ret = 0;
+    }
+#else
+    AVPacket encoded;
+    int got_packet = 0;
+    av_init_packet(&encoded);
+    encoded.data = NULL;
+    encoded.size = 0;
+    ret = avcodec_encode_audio2(state->encoder, &encoded, frame, &got_packet);
+    if (ret >= 0 && got_packet)
+    {
+        int adts_len = encoded.size + AAC_HEADER_LENGTH;
+        uint8_t *adts = av_malloc(adts_len);
+        if (!adts)
+            ret = -1;
+        else
+        {
+            adts[0] = 0xFF; adts[1] = 0xF1;
+            adts[2] = (1 << 6) | (sample_index << 2) | ((chan_config >> 2) & 1);
+            adts[3] = ((chan_config & 3) << 6) | ((adts_len >> 11) & 3);
+            adts[4] = (adts_len >> 3) & 0xFF;
+            adts[5] = ((adts_len & 7) << 5) | 0x1F;
+            adts[6] = 0xFC;
+            memcpy(adts + AAC_HEADER_LENGTH, encoded.data, encoded.size);
+            AudioVideoOut_t out = {0};
+            out.data = adts; out.len = adts_len; out.pts = pts; out.type = "audio";
+            if (!context->playback->BackWard && Write(context->output->audio->Write, context, &out, pts) < 0)
+                ret = -1;
+            av_free(adts);
+        }
+        av_free_packet(&encoded);
+    }
+#endif
+
+    av_freep(&frame->data[0]);
+    wrapped_frame_free(&frame);
+    return ret < 0 ? -1 : 0;
+}
+
+static int AACLCTranscoderProcess(AACLCTranscoderState *state, Context_t *context, AVCodecContext *decoder, Track_t *track, AVFrame *decoded, uint32_t av_context_idx, int64_t packet_pts)
+{
+    uint8_t **converted = NULL;
+    int converted_linesize = 0;
+    int out_samples;
+    int ret;
+
+    if (!state->encoder || state->track_id != track->Id)
+    {
+        AACLCTranscoderClose(state);
+        if (AACLCTranscoderInit(state, decoder, track->Id) < 0)
+            return -1;
+    }
+
+    if (state->next_pts == INVALID_PTS_VALUE)
+    {
+        state->next_pts = calcPts(av_context_idx, track->stream, wrapped_frame_get_best_effort_timestamp(decoded));
+        if (state->next_pts == INVALID_PTS_VALUE)
+            state->next_pts = packet_pts;
+    }
+
+    int channels;
+#if HAVE_CH_LAYOUT
+    channels = state->encoder->ch_layout.nb_channels;
+#else
+    channels = state->encoder->channels;
+#endif
+
+    out_samples = av_rescale_rnd(swr_get_delay(state->swr, decoder->sample_rate) + decoded->nb_samples,
+                                 state->encoder->sample_rate, decoder->sample_rate, AV_ROUND_UP);
+    ret = av_samples_alloc_array_and_samples(&converted, &converted_linesize,
+                                             channels, out_samples,
+                                             state->encoder->sample_fmt, 0);
+    if (ret < 0)
+        return -1;
+
+    out_samples = swr_convert(state->swr, converted, out_samples,
+                              (const uint8_t **)decoded->extended_data, decoded->nb_samples);
+    if (out_samples < 0)
+    {
+        av_freep(&converted[0]);
+        av_freep(&converted);
+        return -1;
+    }
+
+    if (av_audio_fifo_write(state->fifo, (void **)converted, out_samples) < out_samples)
+    {
+        av_freep(&converted[0]);
+        av_freep(&converted);
+        return -1;
+    }
+
+    av_freep(&converted[0]);
+    av_freep(&converted);
+
+    while (av_audio_fifo_size(state->fifo) >= state->encoder->frame_size)
+    {
+        int64_t frame_pts = state->next_pts;
+        if (AACLCTranscoderWriteFrame(state, context, frame_pts) < 0)
+            return -1;
+        if (state->next_pts != INVALID_PTS_VALUE)
+            state->next_pts += av_rescale(state->encoder->frame_size, 90000, state->encoder->sample_rate);
+    }
+
+    return 0;
+}
+
 static void AC3TranscoderClose(AC3TranscoderState *state)
 {
     if (!state)
@@ -1180,6 +1573,9 @@ static void FFMPEGThread(Context_t *context)
     AC3TranscoderState ac3Transcoder = {0};
     ac3Transcoder.next_pts = INVALID_PTS_VALUE;
     ac3Transcoder.track_id = -1;
+    AACLCTranscoderState aaclcTranscoder = {0};
+    aaclcTranscoder.next_pts = INVALID_PTS_VALUE;
+    aaclcTranscoder.track_id = -1;
     AVFrame *decoded_frame = NULL;
     int32_t out_sample_rate = 44100;
     int ac4_immersive_ok = 0;   /* librempeg AC-4 may fill only ch[0] — promote once others wake */
@@ -1579,6 +1975,8 @@ static void FFMPEGThread(Context_t *context)
                 ffmpeg_printf(200, "AudioTrack index = %d\n",pid);
                 if (!audioTrack->transcode_to_ac3 && ac3Transcoder.encoder)
                     AC3TranscoderClose(&ac3Transcoder);
+                if (!audioTrack->transcode_to_aaclc && aaclcTranscoder.encoder)
+                    AACLCTranscoderClose(&aaclcTranscoder);
 
                 if (audioTrack->inject_raw_pcm == 1)
                 {
@@ -1601,7 +1999,7 @@ static void FFMPEGThread(Context_t *context)
                         ffmpeg_err("(raw pcm) writing data to audio device failed\n");
                     }
                 }
-                else if ((audioTrack->inject_as_pcm == 1 || audioTrack->transcode_to_ac3 == 1) && audioTrack->avCodecCtx)
+                else if ((audioTrack->inject_as_pcm == 1 || audioTrack->transcode_to_ac3 == 1 || audioTrack->transcode_to_aaclc == 1) && audioTrack->avCodecCtx)
                 {
                     AVCodecContext *c = audioTrack->avCodecCtx;
 
@@ -1619,6 +2017,7 @@ static void FFMPEGThread(Context_t *context)
                             decoded_frame = NULL;
                         }
                         AC3TranscoderClose(&ac3Transcoder);
+                        AACLCTranscoderClose(&aaclcTranscoder);
                     }
 #if (LIBAVFORMAT_VERSION_MAJOR > 57) || ((LIBAVFORMAT_VERSION_MAJOR == 57) && (LIBAVFORMAT_VERSION_MINOR > 32))
                     while (packet.size > 0 || (!packet.size && !packet.data))
@@ -1713,6 +2112,16 @@ static void FFMPEGThread(Context_t *context)
                             if (AC3TranscoderProcess(&ac3Transcoder, context, c, audioTrack, decoded_frame, cAVIdx, pts) < 0)
                             {
                                 ffmpeg_err("AC3 transcoding failed\n");
+                                restart_audio_resampling = 1;
+                                break;
+                            }
+                            continue;
+                        }
+                        if (audioTrack->transcode_to_aaclc)
+                        {
+                            if (AACLCTranscoderProcess(&aaclcTranscoder, context, c, audioTrack, decoded_frame, cAVIdx, pts) < 0)
+                            {
+                                ffmpeg_err("AAC-LC transcoding failed\n");
                                 restart_audio_resampling = 1;
                                 break;
                             }
@@ -2091,6 +2500,7 @@ static void FFMPEGThread(Context_t *context)
     }
 
     AC3TranscoderClose(&ac3Transcoder);
+    AACLCTranscoderClose(&aaclcTranscoder);
 
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
     mpeg4p2_context_close(mpeg4p2_context);
@@ -3006,8 +3416,15 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     track.transcode_to_ac3 =
                         (get_codecpar(stream)->codec_id == AV_CODEC_ID_DTS && dts_ac3_transcode) ||
                         ((get_codecpar(stream)->codec_id == AV_CODEC_ID_TRUEHD || get_codecpar(stream)->codec_id == AV_CODEC_ID_MLP) && truehd_ac3_transcode);
+                    track.transcode_to_aaclc =
+                        aac_he_transcode &&
+                        IsHEAACStream(stream) &&
+                        !((get_codecpar(stream)->codec_id == AV_CODEC_ID_AAC && aac_software_decode) ||
+                          (get_codecpar(stream)->codec_id == AV_CODEC_ID_AAC_LATM && aac_latm_software_decode));
                     if (track.transcode_to_ac3)
                         track.OutputEncoding = "A_AC3";
+                    else if (track.transcode_to_aaclc)
+                        track.OutputEncoding = "A_AAC";
                     track.stream         = stream;
                     track.Id             = ((AVStream *) (track.stream))->id;
                     track.aacbuf         = 0;
@@ -3020,9 +3437,9 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                         track.duration = (int64_t) avContext->duration / 1000;
                     }
 
-                    if(track.transcode_to_ac3 || !strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
+                    if(track.transcode_to_ac3 || track.transcode_to_aaclc || !strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
                     {
-                        track.inject_as_pcm = track.transcode_to_ac3 ? 0 : 1;
+                        track.inject_as_pcm = (track.transcode_to_ac3 || track.transcode_to_aaclc) ? 0 : 1;
                         track.avCodecCtx = wrapped_avcodec_get_context(cAVIdx, stream);
                         if (track.avCodecCtx)
                         {

@@ -76,6 +76,7 @@ typedef struct Track_s {
     char                 *OutputEncoding;
     int                   channels;
     int                   transcode_to_ac3;
+    int                   transcode_to_aaclc;
 } Track_t;
 
 typedef struct TrackDescription_s
