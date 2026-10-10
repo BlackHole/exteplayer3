@@ -415,7 +415,11 @@ static const char* Codec2AudioDescription(int32_t codec_id, int profile)
     case AV_CODEC_ID_AC3:
         return "Dolby Digital";
     case AV_CODEC_ID_EAC3:
-#ifdef FF_PROFILE_EAC3_DDP_ATMOS
+#if defined(AV_PROFILE_EAC3_DDP_ATMOS)
+        /* ffmpeg >= 6.1 (the FF_PROFILE_* names are removed in ffmpeg 8) */
+        if (profile == AV_PROFILE_EAC3_DDP_ATMOS)
+            return "Dolby Atmos";
+#elif defined(FF_PROFILE_EAC3_DDP_ATMOS)
         if (profile == FF_PROFILE_EAC3_DDP_ATMOS)
             return "Dolby Atmos";
 #endif
@@ -1542,6 +1546,441 @@ static void updateHevcHdr(Context_t *context, Track_t *track,
 #endif
 }
 
+/* ------------------------------------------------------------------ */
+/* Live E-AC-3 Dolby Atmos (JOC) detection                            */
+/*                                                                    */
+/* The audio track description ("Dolby Digital +" / "Dolby Atmos") is */
+/* built once, at open time, from the stream profile ffmpeg happened  */
+/* to report after avformat_find_stream_info(). For live streams that */
+/* is a snapshot of the first few frames and is never refreshed, so   */
+/* Atmos starting later (or ending again, e.g. an ad break) is not    */
+/* reflected. Instead inspect the selected track's E-AC-3 packets for */
+/* the JOC signalling (flag_ec3_extension_type_a + complexity index   */
+/* in the additional bitstream info) and keep a live verdict, which   */
+/* the audio manager overlays on the track description.               */
+/* ------------------------------------------------------------------ */
+typedef struct
+{
+    const uint8_t *data;
+    size_t         size;
+    size_t         bitpos;
+    int            ok;
+} eac3_bits_t;
+
+/* what the last parsed frame carried in addbsi (diagnostics only) */
+static unsigned int g_eac3_diag_have       = 0;
+static unsigned int g_eac3_diag_addbsil    = 0;
+static unsigned int g_eac3_diag_flag       = 0;
+static unsigned int g_eac3_diag_complexity = 0;
+
+static uint32_t eac3_bits_read(eac3_bits_t *br, unsigned int n)
+{
+    uint32_t value = 0;
+
+    if (!br->ok || br->bitpos + n > br->size * 8)
+    {
+        br->ok = 0;
+        return 0;
+    }
+    while (n--)
+    {
+        value = (value << 1) | ((br->data[br->bitpos >> 3] >> (7 - (br->bitpos & 7))) & 1);
+        ++br->bitpos;
+    }
+    return value;
+}
+
+static void eac3_bits_skip(eac3_bits_t *br, unsigned int n)
+{
+    if (!br->ok || br->bitpos + n > br->size * 8)
+        br->ok = 0;
+    else
+        br->bitpos += n;
+}
+
+/* Parse one E-AC-3 syncframe header + bsi. Returns 1 for a valid
+ * independent/dependent substream-0 frame; *atmos is set if it carries JOC. */
+static int eac3_parse_frame(const uint8_t *data, size_t size, unsigned int *frame_size, int *atmos)
+{
+    eac3_bits_t br = { data, size, 0, 1 };
+    unsigned int i, frame_type, substreamid, sr_code, num_blocks, channel_mode, lfe_on, bitstream_id;
+
+    *frame_size = 0;
+    *atmos = 0;
+
+    if (!data || size < 7)
+        return 0;
+    if (eac3_bits_read(&br, 16) != 0x0b77)
+        return 0;
+
+    frame_type  = eac3_bits_read(&br, 2);
+    substreamid = eac3_bits_read(&br, 3);
+    *frame_size = (eac3_bits_read(&br, 11) + 1) << 1;
+    sr_code     = eac3_bits_read(&br, 2);
+
+    num_blocks = 6;
+    if (sr_code == 3)
+    {
+        if (eac3_bits_read(&br, 2) == 3)
+            return 0;
+    }
+    else
+    {
+        static const unsigned int blocks[4] = { 1, 2, 3, 6 };
+        num_blocks = blocks[eac3_bits_read(&br, 2)];
+    }
+
+    channel_mode = eac3_bits_read(&br, 3);
+    lfe_on       = eac3_bits_read(&br, 1);
+
+    if (!br.ok || frame_type == 3 || substreamid != 0 || *frame_size < 7 || *frame_size > size)
+        return 0;
+
+    bitstream_id = eac3_bits_read(&br, 5);
+    if (!br.ok || bitstream_id <= 10 || bitstream_id > 16)
+        return 0;
+
+    /* volume control parameters */
+    for (i = 0; i < (channel_mode ? 1U : 2U); ++i)
+    {
+        eac3_bits_skip(&br, 5);                 /* dialnorm */
+        if (eac3_bits_read(&br, 1))
+            eac3_bits_skip(&br, 8);             /* compression */
+    }
+
+    /* dependent stream channel map */
+    if (frame_type == 1)
+    {
+        if (eac3_bits_read(&br, 1))
+            eac3_bits_skip(&br, 16);
+    }
+
+    /* mixing metadata */
+    if (eac3_bits_read(&br, 1))
+    {
+        if (channel_mode > 2)
+        {
+            eac3_bits_skip(&br, 2);             /* preferred downmix */
+            if (channel_mode & 1)
+                eac3_bits_skip(&br, 6);         /* center mix levels */
+            if (channel_mode & 4)
+                eac3_bits_skip(&br, 6);         /* surround mix levels */
+        }
+
+        if (lfe_on && eac3_bits_read(&br, 1))
+            eac3_bits_skip(&br, 5);
+
+        if (frame_type == 0)
+        {
+            for (i = 0; i < (channel_mode ? 1U : 2U); ++i)
+            {
+                if (eac3_bits_read(&br, 1))
+                    eac3_bits_skip(&br, 6);
+            }
+
+            if (eac3_bits_read(&br, 1))
+                eac3_bits_skip(&br, 6);
+
+            switch (eac3_bits_read(&br, 2))
+            {
+                case 1:
+                    eac3_bits_skip(&br, 5);
+                    break;
+                case 2:
+                    eac3_bits_skip(&br, 12);
+                    break;
+                case 3:
+                {
+                    unsigned int mix_data_size = (eac3_bits_read(&br, 5) + 2) << 3;
+                    eac3_bits_skip(&br, mix_data_size);
+                    break;
+                }
+                default:
+                    break;
+            }
+
+            if (channel_mode < 2)
+            {
+                for (i = 0; i < (channel_mode ? 1U : 2U); ++i)
+                {
+                    if (eac3_bits_read(&br, 1))
+                        eac3_bits_skip(&br, 14);
+                }
+            }
+
+            if (eac3_bits_read(&br, 1))
+            {
+                for (i = 0; i < num_blocks; ++i)
+                {
+                    if (num_blocks == 1 || eac3_bits_read(&br, 1))
+                        eac3_bits_skip(&br, 5);
+                }
+            }
+        }
+    }
+
+    /* informational metadata */
+    if (eac3_bits_read(&br, 1))
+    {
+        eac3_bits_skip(&br, 3);                 /* bsmod */
+        eac3_bits_skip(&br, 2);                 /* copyright + original */
+
+        if (channel_mode == 2)
+            eac3_bits_skip(&br, 4);
+        if (channel_mode >= 6)
+            eac3_bits_skip(&br, 2);
+
+        for (i = 0; i < (channel_mode ? 1U : 2U); ++i)
+        {
+            if (eac3_bits_read(&br, 1))
+                eac3_bits_skip(&br, 8);
+        }
+
+        if (sr_code != 3)
+            eac3_bits_skip(&br, 1);
+    }
+
+    if (frame_type == 0 && num_blocks != 6)
+        eac3_bits_skip(&br, 1);                 /* converter sync */
+
+    if (frame_type == 2)
+    {
+        int have_original_size = (num_blocks == 6);
+        if (!have_original_size)
+            have_original_size = eac3_bits_read(&br, 1) != 0;
+        if (have_original_size)
+            eac3_bits_skip(&br, 6);
+    }
+
+    if (!br.ok)
+        return 0;
+
+    /* additional bitstream info: JOC = flag + non-zero complexity index */
+    if (eac3_bits_read(&br, 1))
+    {
+        unsigned int addbsil = eac3_bits_read(&br, 6);
+        unsigned int flag, complexity = 0;
+
+        if (!br.ok)
+            return 0;
+
+        eac3_bits_skip(&br, 7);
+        flag = eac3_bits_read(&br, 1);
+        if (br.ok && flag && addbsil >= 1)
+            complexity = eac3_bits_read(&br, 8);
+        *atmos = br.ok && flag && addbsil >= 1 && complexity >= 1;
+        g_eac3_diag_have       = 1;
+        g_eac3_diag_addbsil    = addbsil;
+        g_eac3_diag_flag       = flag;
+        g_eac3_diag_complexity = complexity;
+    }
+
+    return br.ok;
+}
+
+/* Size of a plain AC-3 core syncframe (bsid <= 10), or 0 if invalid. */
+static unsigned int ac3_core_frame_size(const uint8_t *data, size_t size)
+{
+    static const unsigned int bitrates[19] = {
+        32, 40, 48, 56, 64, 80, 96, 112, 128, 160,
+        192, 224, 256, 320, 384, 448, 512, 576, 640
+    };
+    unsigned int fscod, frame_size_code, bitrate;
+
+    if (size < 7)
+        return 0;
+
+    fscod           = data[4] >> 6;
+    frame_size_code = data[4] & 0x3f;
+    if ((data[5] >> 3) > 10 || fscod == 3 || frame_size_code > 37)
+        return 0;
+
+    bitrate = bitrates[frame_size_code >> 1];
+    switch (fscod)
+    {
+        case 0:  return bitrate * 4;
+        case 1:  return (((bitrate * 320) / 147) + (frame_size_code & 1)) * 2;
+        case 2:  return bitrate * 6;
+        default: return 0;
+    }
+}
+
+/* Walk the syncframes of one demuxed packet; 1 if any carries JOC. */
+static int eac3_packet_has_atmos(const uint8_t *data, size_t size)
+{
+    size_t offset = 0;
+    unsigned int frame;
+
+    if (!data || size < 7 || data[0] != 0x0b || data[1] != 0x77)
+        return 0;
+
+    for (frame = 0; frame < 8 && offset + 7 <= size; ++frame)
+    {
+        unsigned int frame_size = 0;
+        int atmos = 0;
+
+        if ((data[offset + 5] >> 3) <= 10)
+        {
+            /* AC-3 compatible core in front of the E-AC-3 extension */
+            frame_size = ac3_core_frame_size(data + offset, size - offset);
+            if (!frame_size || frame_size > size - offset)
+                break;
+            offset += frame_size;
+            continue;
+        }
+
+        if (!eac3_parse_frame(data + offset, size - offset, &frame_size, &atmos))
+            break;
+        if (atmos)
+            return 1;
+        if (!frame_size || frame_size > size - offset)
+            break;
+        offset += frame_size;
+    }
+    return 0;
+}
+
+/* Atmos-flagged packets needed (with no gap longer than STALE packets)
+ * before declaring Atmos; packets without any flagged one (once declared)
+ * before declaring it gone again. Packets are not required to be
+ * consecutive: plain buffers can legitimately sit inside a real Atmos
+ * stream (dependent frames, AC-3 cores). */
+#define EAC3_ATMOS_CONFIRM_PACKETS 3
+#define EAC3_ATMOS_STALE_PACKETS   16
+#define EAC3_ATMOS_LOST_PACKETS    48
+
+static volatile int32_t g_eac3_atmos_track_id = -1;
+static volatile int     g_eac3_atmos_verdict  = -1; /* -1 unknown, 0 no, 1 yes */
+static unsigned int     g_eac3_atmos_pos      = 0;
+static unsigned int     g_eac3_atmos_neg      = 0;
+
+/* Used by the audio manager to refine the track description. */
+int container_ffmpeg_audio_atmos_verdict(int32_t track_id)
+{
+    return (g_eac3_atmos_track_id == track_id) ? g_eac3_atmos_verdict : -1;
+}
+
+static void eac3_atmos_feed(int32_t track_id, const uint8_t *data, size_t size)
+{
+    int detected = eac3_packet_has_atmos(data, size);
+
+    if (track_id != g_eac3_atmos_track_id)
+    {
+        g_eac3_atmos_verdict  = -1;
+        g_eac3_atmos_pos      = 0;
+        g_eac3_atmos_neg      = 0;
+        g_eac3_atmos_track_id = track_id;
+    }
+
+    if (detected)
+    {
+        ++g_eac3_atmos_pos;
+        g_eac3_atmos_neg = 0;
+    }
+    else
+    {
+        ++g_eac3_atmos_neg;
+        if (g_eac3_atmos_verdict != 1 && g_eac3_atmos_neg > EAC3_ATMOS_STALE_PACKETS)
+            g_eac3_atmos_pos = 0;
+    }
+
+    if (g_eac3_atmos_verdict != 1 && g_eac3_atmos_pos >= EAC3_ATMOS_CONFIRM_PACKETS)
+    {
+        g_eac3_atmos_verdict = 1;
+        ffmpeg_printf(1, "E-AC3 Atmos (JOC) detected on audio track %d\n", (int)track_id);
+    }
+    else if (g_eac3_atmos_verdict == 1 && g_eac3_atmos_neg >= EAC3_ATMOS_LOST_PACKETS)
+    {
+        g_eac3_atmos_verdict = 0;
+        g_eac3_atmos_pos     = 0;
+        ffmpeg_printf(1, "E-AC3 Atmos (JOC) no longer present on audio track %d\n", (int)track_id);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Optional capture for offline analysis, no logging needed: create    */
+/* /tmp/eac3_atmos_diag, then (re)start playback. For the selected     */
+/* audio track this writes /tmp/eac3_atmos_diag.txt (codec, per-packet */
+/* parse results) and /tmp/eac3_atmos_diag.bin (the first ~2MB of      */
+/* packets, each prefixed with a 4-byte little-endian length), taken   */
+/* after demux/decryption exactly as the detector sees them.           */
+/* ------------------------------------------------------------------ */
+#define EAC3_DIAG_TRIGGER "/tmp/eac3_atmos_diag"
+#define EAC3_DIAG_MAXBYTES (2 * 1024 * 1024)
+
+static int32_t g_eac3_diag_track = -2;
+static FILE   *g_eac3_diag_txt   = NULL;
+static FILE   *g_eac3_diag_bin   = NULL;
+static size_t  g_eac3_diag_bytes = 0;
+static unsigned int g_eac3_diag_pkts = 0;
+
+static void eac3_diag_close(void)
+{
+    if (g_eac3_diag_txt) { fclose(g_eac3_diag_txt); g_eac3_diag_txt = NULL; }
+    if (g_eac3_diag_bin) { fclose(g_eac3_diag_bin); g_eac3_diag_bin = NULL; }
+}
+
+static void eac3_diag_packet(int32_t track_id, int codec_id, const uint8_t *data, size_t size)
+{
+    if (track_id != g_eac3_diag_track)
+    {
+        g_eac3_diag_track = track_id;
+        g_eac3_diag_bytes = 0;
+        g_eac3_diag_pkts  = 0;
+        eac3_diag_close();
+        if (access(EAC3_DIAG_TRIGGER, F_OK) == 0)
+        {
+            g_eac3_diag_txt = fopen(EAC3_DIAG_TRIGGER ".txt", "w");
+            g_eac3_diag_bin = fopen(EAC3_DIAG_TRIGGER ".bin", "wb");
+            if (g_eac3_diag_txt)
+            {
+                fprintf(g_eac3_diag_txt, "audio track id=%d codec_id=%d (EAC3=%d)\n", (int)track_id, codec_id, (int)AV_CODEC_ID_EAC3);
+                fflush(g_eac3_diag_txt);
+            }
+        }
+    }
+
+    if (!g_eac3_diag_txt || !data || size == 0)
+        return;
+
+    ++g_eac3_diag_pkts;
+
+    if (g_eac3_diag_bin && g_eac3_diag_bytes < EAC3_DIAG_MAXBYTES)
+    {
+        uint8_t len[4] = { size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >> 24) & 0xff };
+        fwrite(len, 1, 4, g_eac3_diag_bin);
+        fwrite(data, 1, size, g_eac3_diag_bin);
+        g_eac3_diag_bytes += size + 4;
+        fflush(g_eac3_diag_bin);
+    }
+
+    if (g_eac3_diag_pkts <= 40 || (g_eac3_diag_pkts % 100) == 0)
+    {
+        unsigned int frame_size = 0;
+        int atmos = 0, ok;
+        unsigned int k;
+
+        g_eac3_diag_have = 0;
+        ok = eac3_parse_frame(data, size, &frame_size, &atmos);
+        fprintf(g_eac3_diag_txt, "pkt %u size=%zu head=", g_eac3_diag_pkts, size);
+        for (k = 0; k < 8 && k < size; ++k)
+            fprintf(g_eac3_diag_txt, "%02x ", data[k]);
+        fprintf(g_eac3_diag_txt, "parse_ok=%d frame_size=%u atmos=%d packet_atmos=%d", ok, frame_size, atmos, eac3_packet_has_atmos(data, size));
+        if (g_eac3_diag_have)
+            fprintf(g_eac3_diag_txt, " addbsil=%u flag=%u complexity=%u", g_eac3_diag_addbsil, g_eac3_diag_flag, g_eac3_diag_complexity);
+        fprintf(g_eac3_diag_txt, " verdict=%d\n", container_ffmpeg_audio_atmos_verdict(track_id));
+        fflush(g_eac3_diag_txt);
+    }
+}
+
+/* Called for every packet of the selected audio track. */
+static void audio_atmos_hook(int32_t track_id, int codec_id, const uint8_t *data, size_t size)
+{
+    eac3_diag_packet(track_id, codec_id, data, size);
+    if (codec_id == AV_CODEC_ID_EAC3 && data && size > 0)
+        eac3_atmos_feed(track_id, data, size);
+}
+
 static void FFMPEGThread(Context_t *context)
 {
     char threadname[17];
@@ -1953,6 +2392,10 @@ static void FFMPEGThread(Context_t *context)
                     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
                     continue;
                 }
+
+                /* live Atmos (JOC) detection on the selected E-AC-3 track */
+                if (packet.data && packet.size > 0)
+                    audio_atmos_hook(audioTrack->Id, (int)get_codecpar(audioTrack->stream)->codec_id, packet.data, (size_t)packet.size);
 
                 pcmPrivateData_t pcmExtradata;
 #if HAVE_CH_LAYOUT

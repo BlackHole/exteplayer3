@@ -110,6 +110,27 @@ static int ManagerAdd(Context_t  *context, Track_t track) {
     return cERR_AUDIO_MGR_NO_ERROR;
 }
 
+/* Live Atmos verdict from the container's E-AC-3 packet inspection
+ * (container_ffmpeg.c): -1 unknown, 0 plain DD+, 1 Atmos. */
+extern int container_ffmpeg_audio_atmos_verdict(int32_t track_id);
+
+/* Track description, with the Dolby Digital+ / Atmos label refined by what
+ * the stream actually carries right now rather than the open-time snapshot. */
+static const char *TrackDescriptionString(const Track_t *track)
+{
+    const char *desc = track->Description ? track->Description : track->Encoding;
+
+    if (desc && (!strcmp(desc, "Dolby Digital +") || !strcmp(desc, "Dolby Atmos")))
+    {
+        int verdict = container_ffmpeg_audio_atmos_verdict(track->Id);
+        if (verdict == 1)
+            return "Dolby Atmos";
+        if (verdict == 0)
+            return "Dolby Digital +";
+    }
+    return desc;
+}
+
 static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused)))
 {
     int i = 0;
@@ -135,7 +156,7 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
 
             tracklist[j].Id = Tracks[i].Id;
             tracklist[j].Name = strdup(Tracks[i].Name);
-            tracklist[j].Encoding = strdup(Tracks[i].Description ? Tracks[i].Description : Tracks[i].Encoding);
+            tracklist[j].Encoding = strdup(TrackDescriptionString(&Tracks[i]));
             tracklist[j].channels = Tracks[i].channels;
             ++j;
         }
@@ -234,7 +255,7 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
                 memset(track, 0, sizeof(TrackDescription_t));
                 track->Id       = Tracks[CurrentTrack].Id;
                 track->Name     = strdup(Tracks[CurrentTrack].Name);
-                track->Encoding = strdup(Tracks[CurrentTrack].Description ? Tracks[CurrentTrack].Description : Tracks[CurrentTrack].Encoding);
+                track->Encoding = strdup(TrackDescriptionString(&Tracks[CurrentTrack]));
                 track->channels = Tracks[CurrentTrack].channels;
             }
         }
