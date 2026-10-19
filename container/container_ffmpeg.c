@@ -2446,9 +2446,10 @@ static void FFMPEGThread(Context_t *context)
                 {
                     AVCodecContext *c = audioTrack->avCodecCtx;
 
+                    /* cleared once a frame is written: the first packet after
+                     * a seek may give no frame */
                     if (restart_audio_resampling)
                     {
-                        restart_audio_resampling = 0;
                         if (swr)
                         {
                             swr_free(&swr);
@@ -2734,6 +2735,7 @@ static void FFMPEGThread(Context_t *context)
 #endif
                         pcmExtradata.bits_per_coded_sample = 16;
                         pcmExtradata.sample_rate           = out_sample_rate;
+                        pcmExtradata.bResampling           = restart_audio_resampling;
                         // The data described by the sample format is always in native-endian order
 #ifdef WORDS_BIGENDIAN
                         pcmExtradata.codec_id       = AV_CODEC_ID_PCM_S16BE;
@@ -2758,6 +2760,10 @@ static void FFMPEGThread(Context_t *context)
                         if (!context->playback->BackWard && Write(context->output->audio->Write, context, &avOut, pts) < 0)
                         {
                             ffmpeg_err("writing data to audio device failed\n");
+                        }
+                        else
+                        {
+                            restart_audio_resampling = 0;
                         }
                         av_freep(&output[0]);
                     }
