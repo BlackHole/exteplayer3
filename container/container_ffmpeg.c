@@ -2446,9 +2446,10 @@ static void FFMPEGThread(Context_t *context)
                 {
                     AVCodecContext *c = audioTrack->avCodecCtx;
 
+                    /* cleared once a frame is written: the first packet after
+                     * a seek may give no frame */
                     if (restart_audio_resampling)
                     {
-                        restart_audio_resampling = 0;
                         if (swr)
                         {
                             swr_free(&swr);
@@ -2734,6 +2735,7 @@ static void FFMPEGThread(Context_t *context)
 #endif
                         pcmExtradata.bits_per_coded_sample = 16;
                         pcmExtradata.sample_rate           = out_sample_rate;
+                        pcmExtradata.bResampling           = restart_audio_resampling;
                         // The data described by the sample format is always in native-endian order
 #ifdef WORDS_BIGENDIAN
                         pcmExtradata.codec_id       = AV_CODEC_ID_PCM_S16BE;
@@ -2758,6 +2760,10 @@ static void FFMPEGThread(Context_t *context)
                         if (!context->playback->BackWard && Write(context->output->audio->Write, context, &avOut, pts) < 0)
                         {
                             ffmpeg_err("writing data to audio device failed\n");
+                        }
+                        else
+                        {
+                            restart_audio_resampling = 0;
                         }
                         av_freep(&output[0]);
                     }
@@ -2989,6 +2995,14 @@ int SAM_ReadFunc(void *ptr, uint8_t *buffer, int lSize)
     if (!io->pMoovFile)
     {
         ret = (int)fread( (void *) buffer, (size_t) 1, (size_t) lSize, io->pFile );
+        /* 0 is no EOF for an AVIOContext, it would read again forever */
+        if (ret == 0)
+        {
+            if (feof(io->pFile))
+                return AVERROR_EOF;
+            if (ferror(io->pFile))
+                return AVERROR(errno ? errno : EIO);
+        }
     }
     else
     {
@@ -3015,6 +3029,10 @@ int SAM_ReadFunc(void *ptr, uint8_t *buffer, int lSize)
         }
 
         io->iOffset += ret;
+        if (ret == 0)
+        {
+            return AVERROR_EOF;
+        }
     }
     return ret;
 }
@@ -3026,7 +3044,17 @@ int64_t SAM_SeekFunc(void *ptr, int64_t pos, int whence)
     int64_t ret = -1;
     if (!io->pMoovFile)
     {
-        if( AVSEEK_SIZE != whence )
+        if( AVSEEK_SIZE == whence )
+        {
+            /* without a size FFmpeg takes the file as one of unknown length */
+            off_t curr = ftello(io->pFile);
+            if (fseeko(io->pFile, 0, SEEK_END) == 0)
+            {
+                ret = (int64_t)ftello(io->pFile);
+                fseeko(io->pFile, curr, SEEK_SET);
+            }
+        }
+        else
         {
             ret = (int64_t)fseeko(io->pFile, (off_t)pos, whence);
             if(0 == ret)
@@ -3134,7 +3162,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     {
         AVIOContext *avio_ctx = NULL;
         custom_io_tab[AVIdx] = malloc(sizeof(CustomIOCtx_t));
-        sizeof(custom_io_tab[AVIdx], 0x00, sizeof(CustomIOCtx_t));
+        memset(custom_io_tab[AVIdx], 0x00, sizeof(CustomIOCtx_t));
 
         custom_io_tab[AVIdx]->szFile = filename;
         custom_io_tab[AVIdx]->iFileSize = fileSize;
@@ -3378,6 +3406,9 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
 
     	sprintf( num, "%u000", context->playback->httpTimeout );
         av_dict_set(&avio_opts, "timeout", num, 0); // default is 10s
+        /* the HLS and DASH demuxers pass rw_timeout, not timeout, on to the
+         * connections of their segments and playlists */
+        av_dict_set(&avio_opts, "rw_timeout", num, 0);
         av_dict_set(&avio_opts, "reconnect", "1", 0);
         if (context->playback->isTSLiveMode) // special mode for live TS stream with skip packet
         {
@@ -3391,11 +3422,14 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         if (strstr(filename, ".m3u"))
         {
             av_dict_set(&avio_opts, "recv_buffer_size",  "4194304", 0);
-            av_dict_set(&avio_opts, "multiple_requests",       "1", 0);
             av_dict_set(&avio_opts, "live_start_index",       "-3", 0);
             av_dict_set(&avio_opts, "max_reload",             "10", 0);
             av_dict_set(&avio_opts, "http_persistent",         "1", 0);
             av_dict_set(&avio_opts, "http_multiple",           "1", 0);
+            /* segments behind tracking redirects carry no file extension
+             * (FAST channels); the content decides, as in GStreamer */
+            av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
+            av_dict_set(&avio_opts, "extension_picky",          "0", 0);
         }
 
         if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
@@ -3679,6 +3713,55 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
             }
         }
 
+        /* DASH lists every video representation as a stream and only the
+         * first video track plays: take the best one, as the HLS variants */
+        int32_t bestVideo = -1;
+        if (0 == strncmp(avContext->iformat->name, "dash", 4) && !av_dict_get(g_avio_opts, "video_rep_index", NULL, 0))
+        {
+            int64_t bestScore = -1;
+            int64_t bestRate = -1;
+            uint32_t i;
+            for (i = 0; i < avContext->nb_streams; i++)
+            {
+                AVCodecParameters *par = get_codecpar(avContext->streams[i]);
+                AVRational rate = get_frame_rate(avContext->streams[i]);
+                int64_t score;
+
+                if (par->codec_type != AVMEDIA_TYPE_VIDEO)
+                    continue;
+                score = (int64_t)par->width * par->height * (rate.den ? 1000 * rate.num / rate.den : 25000);
+                if (score > bestScore || (score == bestScore && par->bit_rate > bestRate))
+                {
+                    bestScore = score;
+                    bestRate = par->bit_rate;
+                    bestVideo = i;
+                }
+            }
+            ffmpeg_printf(1, "cAVIdx[%d]: DASH video stream %d\n", cAVIdx, bestVideo);
+        }
+
+        /* HLS gives every stream of a variant the number of the variant as id,
+         * and the packets go to the tracks by id: make the ids unique */
+        {
+            uint32_t i, j = 0;
+            for (i = 1; i < avContext->nb_streams; i++)
+            {
+                for (j = 0; j < i; j++)
+                {
+                    if (avContext->streams[i]->id == avContext->streams[j]->id)
+                        break;
+                }
+                if (j < i)
+                    break;
+            }
+            if (i < avContext->nb_streams)
+            {
+                ffmpeg_printf(1, "cAVIdx[%d]: stream id %d used twice, ids from the stream index\n", cAVIdx, avContext->streams[i]->id);
+                for (i = 0; i < avContext->nb_streams; i++)
+                    avContext->streams[i]->id = i;
+            }
+        }
+
         int32_t n = 0;
         for (n = 0; n < avContext->nb_streams; n++)
         {
@@ -3686,6 +3769,12 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
             AVStream *stream = avContext->streams[n];
             int32_t version = 0;
             char *encoding = NULL;
+
+            if (bestVideo >= 0 && n != bestVideo && get_codecpar(stream)->codec_type == AVMEDIA_TYPE_VIDEO)
+            {
+                stream->discard = AVDISCARD_ALL;
+                continue;
+            }
 
             if (nb_stream_indexes > 0 && stream_index != NULL)
             {
@@ -3803,7 +3892,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if(stream->duration == AV_NOPTS_VALUE || 0 == strncmp(avContext->iformat->name, "dash", 4))
                     {
                         ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                        track.duration = (int64_t) avContext->duration / 1000;
+                        track.duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
                     }
 
                     if (context->manager->video)
@@ -3877,7 +3966,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if(stream->duration == AV_NOPTS_VALUE)
                     {
                         ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                        track.duration = (int64_t) avContext->duration / 1000;
+                        track.duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
                     }
 
                     if(track.transcode_to_ac3 || track.transcode_to_aaclc || !strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
@@ -4180,7 +4269,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if(stream->duration == AV_NOPTS_VALUE)
                     {
                         ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                        track.duration = (int64_t) avContext->duration / 1000;
+                        track.duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
                     }
 
                     ffmpeg_printf(1, "subtitle codec %d\n", get_codecpar(stream)->codec_id);
@@ -4354,6 +4443,16 @@ static int32_t container_ffmpeg_stop(Context_t *context)
                 av_freep(&(avContextTab[i]->pb->buffer));
                 av_freep(&(avContextTab[i]->pb));
                 use_custom_io[i] = 0;
+
+                if (NULL != custom_io_tab[i])
+                {
+                    if (NULL != custom_io_tab[i]->pFile)
+                        fclose(custom_io_tab[i]->pFile);
+                    if (NULL != custom_io_tab[i]->pMoovFile)
+                        fclose(custom_io_tab[i]->pMoovFile);
+                    free(custom_io_tab[i]);
+                    custom_io_tab[i] = NULL;
+                }
             }
             avformat_close_input(&avContextTab[i]);
             avContextTab[i] = NULL;
@@ -4511,7 +4610,7 @@ static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length)
 
     if (current != NULL)
     {
-        if (current->duration == 0)
+        if (current->duration <= 0)
         {
             return cERR_CONTAINER_FFMPEG_ERR;
         }
@@ -4693,7 +4792,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                         if(stream->duration == AV_NOPTS_VALUE || 0 == strncmp(avContext->iformat->name, "dash", 4))
                         {
                             ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                            track->duration = (int64_t) avContext->duration / 1000;
+                            track->duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
                         }
 
                         ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
@@ -4718,7 +4817,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                         if(stream->duration == AV_NOPTS_VALUE)
                         {
                             ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                            track->duration = (int64_t) avContext->duration / 1000;
+                            track->duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
                         }
 
                         ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
@@ -4742,7 +4841,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                         if(stream->duration == AV_NOPTS_VALUE)
                         {
                             ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                            track->duration = (int64_t) avContext->duration / 1000;
+                            track->duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
                         }
 
                         ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
