@@ -75,6 +75,7 @@ extern void pcm_resampling_set(int32_t val);
 extern void stereo_software_decoder_set(int32_t val);
 extern void insert_pcm_as_lpcm_set(int32_t val);
 extern void progressive_playback_set(int32_t val);
+extern int LinuxDvbEac3RestartState(void);
 
 extern OutputHandler_t         OutputHandler;
 extern PlaybackHandler_t       PlaybackHandler;
@@ -404,13 +405,13 @@ static void process_suburi(PlayFiles_t *play_files)
     }
 }
 
-static int kbhit(void)
+static int kbhit(int ms)
 {
     struct timeval tv;
     fd_set readfds;
 
-    tv.tv_sec = 1;
-    tv.tv_usec = 0;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
 
     FD_ZERO(&readfds);
     FD_SET(0,&readfds);
@@ -427,6 +428,18 @@ static int kbhit(void)
     }
 
     return 0;
+}
+
+/* The restart an audio track switch does (output switch, then the 0 s seek
+ * that clears both outputs and resets the writers), here without a change
+ * of track. Done once after a DD+ passthrough start on Vu+ Ultimo 4K /
+ * Duo 4K SE, which stays silent without it. */
+static void Eac3PassthroughRestart(void)
+{
+    int64_t sec = 0;
+
+    g_player->output->audio->Command(g_player, OUTPUT_SWITCH, (void*)"audio");
+    g_player->playback->Command(g_player, PLAYBACK_SEEK, (void*)&sec);
 }
 
 /* Non-blocking read of a command. A closed command pipe means the
@@ -1114,7 +1127,7 @@ int main(int argc, char* argv[])
             if( NULL == ReadCommand(argvBuff, sizeof(argvBuff)-1) )
             {
                 /* wait for data - max 1s */
-                kbhit();
+                kbhit(1000);
                 continue;
             }
 
@@ -1191,8 +1204,14 @@ int main(int argc, char* argv[])
             /* we made fgets non blocking */
             if( NULL == ReadCommand(argvBuff, sizeof(argvBuff)-1) )
             {
-                /* wait for data - max 1s */
-                kbhit();
+                int eac3Restart = LinuxDvbEac3RestartState();
+                if (2 == eac3Restart)
+                {
+                    Eac3PassthroughRestart();
+                    continue;
+                }
+                /* wait for data - max 1s, 20 ms while a DD+ restart is pending */
+                kbhit(1 == eac3Restart ? 20 : 1000);
                 continue;
             }
 
