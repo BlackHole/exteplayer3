@@ -1249,11 +1249,6 @@ int main(int argc, char* argv[])
                 E2iSendMsg("{\"PLAYBACK_CONTINUE\":{\"sts\":%d}}\n", commandRetVal);
                 break;
             }
-            case 'r':
-            {
-                commandRetVal = g_player->output->Command(g_player, OUTPUT_FLUSH, "audio");
-                break;
-            }
             case 'p':
             {
                 commandRetVal = g_player->playback->Command(g_player, PLAYBACK_PAUSE, NULL);
