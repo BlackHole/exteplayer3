@@ -2559,6 +2559,9 @@ static void FFMPEGThread(Context_t *context)
                                 restart_audio_resampling = 1;
                                 break;
                             }
+                            /* the transcoder was reset above, clear the
+                             * flag or it is reset again for every packet */
+                            restart_audio_resampling = 0;
                             continue;
                         }
                         if (audioTrack->transcode_to_aaclc)
@@ -2569,6 +2572,9 @@ static void FFMPEGThread(Context_t *context)
                                 restart_audio_resampling = 1;
                                 break;
                             }
+                            /* the transcoder was reset above, clear the
+                             * flag or it is reset again for every packet */
+                            restart_audio_resampling = 0;
                             continue;
                         }
 
