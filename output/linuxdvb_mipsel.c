@@ -1066,10 +1066,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     }
     case OUTPUT_FLUSH: {
         ret = LinuxDvbFlush(context, (char*)argument);
-        if (argument && !strcmp((char*)argument, "audio") && isBufferedOutput)
-            LinuxDvbBuffFlush(context);
-        else
-            reset(context);
+        reset(context);
         sCURRENT_PTS = 0;
         break;
     }
