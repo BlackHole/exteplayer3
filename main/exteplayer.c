@@ -666,7 +666,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dDXYlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:")) != -1)
+    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dDXKZYlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:")) != -1)
     {
         switch (c)
         {
@@ -724,6 +724,14 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         case 'X':
             printf("TrueHD will be transcoded to AC3 5.1\n");
             truehd_ac3_transcoder_set(1);
+            break;
+        case 'K':
+            printf("DTS / DTS-HD will be transcoded to E-AC3 5.1\n");
+            dts_ac3_transcoder_set(2);
+            break;
+        case 'Z':
+            printf("TrueHD will be transcoded to E-AC3 5.1\n");
+            truehd_ac3_transcoder_set(2);
             break;
         case 'Y':
             printf("HE-AAC will be transcoded to AAC-LC\n");
@@ -933,6 +941,8 @@ int main(int argc, char* argv[])
         printf("[-d] DTS software decoding\n");
         printf("[-D] DTS / DTS-HD transcoding to AC3 5.1\n");
         printf("[-X] TrueHD transcoding to AC3 5.1\n");
+        printf("[-K] DTS / DTS-HD transcoding to E-AC3 5.1\n");
+        printf("[-Z] TrueHD transcoding to E-AC3 5.1\n");
         printf("[-Y] HE-AAC transcoding to AAC-LC\n");
         printf("[-m] MP3 software decoding\n");
         printf("[-A 0|1] disable|enable AMR software decoding\n");

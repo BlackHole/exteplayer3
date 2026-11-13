@@ -242,6 +242,7 @@ static int32_t ac3_software_decode = 0;
 static int32_t eac3_software_decode = 0;
 static int32_t dts_software_decode = 0;
 static int32_t truehd_software_decode = 0;
+/* 0 = off, 1 = to AC3 (Dolby Digital), 2 = to E-AC3 (Dolby Digital +) */
 static int32_t dts_ac3_transcode = 0;
 static int32_t truehd_ac3_transcode = 0;
 static int32_t amr_software_decode = 1;
@@ -765,6 +766,7 @@ typedef struct
     AVAudioFifo *fifo;
     int64_t next_pts;
     int track_id;
+    int eac3;
 } AC3TranscoderState;
 
 /* HE-AAC is decoded by FFmpeg and re-encoded as plain AAC-LC before it reaches
@@ -1172,14 +1174,14 @@ static void AC3TranscoderClose(AC3TranscoderState *state)
     state->track_id = -1;
 }
 
-static int AC3TranscoderInit(AC3TranscoderState *state, AVCodecContext *decoder, int track_id)
+static int AC3TranscoderInit(AC3TranscoderState *state, AVCodecContext *decoder, int track_id, int eac3)
 {
-    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AC3);
+    const AVCodec *codec = avcodec_find_encoder(eac3 ? AV_CODEC_ID_EAC3 : AV_CODEC_ID_AC3);
     int ret;
 
     if (!state || !decoder || !codec)
     {
-        ffmpeg_err("AC3 encoder unavailable\n");
+        ffmpeg_err("%s encoder unavailable\n", eac3 ? "E-AC3" : "AC3");
         return -1;
     }
 
@@ -1187,7 +1189,7 @@ static int AC3TranscoderInit(AC3TranscoderState *state, AVCodecContext *decoder,
     if (!state->encoder)
         return -1;
 
-    state->encoder->bit_rate = 640000;
+    state->encoder->bit_rate = eac3 ? 1536000 : 640000;
     state->encoder->sample_rate = 48000;
     state->encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
     if (codec->sample_fmts)
@@ -1275,7 +1277,8 @@ static int AC3TranscoderInit(AC3TranscoderState *state, AVCodecContext *decoder,
 
     state->next_pts = INVALID_PTS_VALUE;
     state->track_id = track_id;
-    ffmpeg_printf(1, "AC3 transcoder ready: 5.1 48kHz 640kbit/s\n");
+    state->eac3 = eac3;
+    ffmpeg_printf(1, "%s transcoder ready: 5.1 48kHz %dkbit/s\n", eac3 ? "E-AC3" : "AC3", eac3 ? 1536 : 640);
     return 0;
 }
 
@@ -1373,10 +1376,12 @@ static int AC3TranscoderProcess(AC3TranscoderState *state, Context_t *context, A
     int out_samples;
     int ret;
 
-    if (!state->encoder || state->track_id != track->Id)
+    const int eac3 = track->OutputEncoding && !strcmp(track->OutputEncoding, "A_EAC3");
+
+    if (!state->encoder || state->track_id != track->Id || state->eac3 != eac3)
     {
         AC3TranscoderClose(state);
-        if (AC3TranscoderInit(state, decoder, track->Id) < 0)
+        if (AC3TranscoderInit(state, decoder, track->Id, eac3) < 0)
             return -1;
     }
 
@@ -3951,16 +3956,26 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
 #else
                     track.channels       = get_codecpar(stream)->channels;
 #endif
-                    track.transcode_to_ac3 =
-                        (get_codecpar(stream)->codec_id == AV_CODEC_ID_DTS && dts_ac3_transcode) ||
-                        ((get_codecpar(stream)->codec_id == AV_CODEC_ID_TRUEHD || get_codecpar(stream)->codec_id == AV_CODEC_ID_MLP) && truehd_ac3_transcode);
+                    int transcode_mode = 0;
+                    if (get_codecpar(stream)->codec_id == AV_CODEC_ID_DTS)
+                        transcode_mode = dts_ac3_transcode;
+                    else if (get_codecpar(stream)->codec_id == AV_CODEC_ID_TRUEHD || get_codecpar(stream)->codec_id == AV_CODEC_ID_MLP)
+                        transcode_mode = truehd_ac3_transcode;
+                    /* Dolby Digital + needs FFmpeg built with the eac3
+                     * encoder; without it, fall back to Dolby Digital */
+                    if (transcode_mode == 2 && !avcodec_find_encoder(AV_CODEC_ID_EAC3))
+                    {
+                        ffmpeg_err("E-AC3 encoder unavailable, transcoding to AC3 instead\n");
+                        transcode_mode = 1;
+                    }
+                    track.transcode_to_ac3 = transcode_mode != 0;
                     track.transcode_to_aaclc =
                         aac_he_transcode &&
                         IsHEAACStream(stream) &&
                         !((get_codecpar(stream)->codec_id == AV_CODEC_ID_AAC && aac_software_decode) ||
                           (get_codecpar(stream)->codec_id == AV_CODEC_ID_AAC_LATM && aac_latm_software_decode));
                     if (track.transcode_to_ac3)
-                        track.OutputEncoding = "A_AC3";
+                        track.OutputEncoding = (transcode_mode == 2) ? "A_EAC3" : "A_AC3";
                     else if (track.transcode_to_aaclc)
                         track.OutputEncoding = "A_AAC";
                     track.stream         = stream;
