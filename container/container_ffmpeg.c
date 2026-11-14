@@ -25,6 +25,9 @@
 /* ***************************** */
 /* Includes                      */
 /* ***************************** */
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
 #include "debug.h"
 
 #include <stdio.h>
@@ -43,6 +46,7 @@
 #include <pthread.h>
 #include <sys/prctl.h>
 #include <stdint.h>
+#include <ctype.h>
 
 #include <libavutil/avutil.h>
 #include <libavutil/time.h>
@@ -50,6 +54,7 @@
 #include <libswresample/swresample.h>
 #include <libavutil/opt.h>
 #include <libavutil/audio_fifo.h>
+#include <libavutil/avstring.h>
 //#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 0, 100)
 #include <libavcodec/bsf.h>
 #include <libavcodec/avcodec.h>
@@ -62,6 +67,8 @@
 #include "debug.h"
 #include "aac.h"
 #include "pcm.h"
+#include "pcm_export.h"
+#include "pts_clock.h"
 #include "ffmpeg_metadata.h"
 #include "hevc_hdr.h"
 
@@ -107,8 +114,8 @@ typedef enum {RTMP_NATIVE, RTMP_LIBRTMP, RTMP_NONE} eRTMPProtoImplType;
 /* Varaibles                     */
 /* ***************************** */
 
-static pthread_rwlock_t mutex;
-static pthread_mutex_t seek_mutex;
+static pthread_rwlock_t mutex = PTHREAD_RWLOCK_INITIALIZER;
+static pthread_mutex_t seek_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_t PlayThread;
 static int32_t hasPlayThreadStarted = 0;
@@ -125,7 +132,18 @@ static int32_t restart_audio_resampling = 0;
 
 static int64_t g_seek_target_seconds = 0;
 static bool g_do_seek_target_seconds = false;
+
+static bool g_zero_seek = false;
 static void *g_stamp;
+static PtsClock ptsClock;
+static int dashAudioResetPending;
+static int pcm_audio_export_enabled;
+static PcmExport pcmExport = {.fd = -1};
+
+void pcm_audio_export_set(int enabled)
+{
+    pcm_audio_export_enabled = enabled != 0;
+}
 
 /* ***************************** */
 /* Prototypes                    */
@@ -134,6 +152,8 @@ static int32_t container_ffmpeg_seek_bytes(off_t pos);
 static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t absolute);
 static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length);
 static int64_t calcPts(uint32_t avContextIdx, AVStream *stream, int64_t pts);
+static int64_t calcDts(uint32_t avContextIdx, AVStream *stream, int64_t pts);
+static int64_t calcConvertedPts(AVStream *stream, AVRational time_base, int64_t pts, int dts);
 static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t pts);
 void LinuxDvbBuffSetStamp(void *stamp);
 
@@ -153,14 +173,6 @@ void progressive_playback_set(int32_t val)
 static void getMutex_uni(int type, const char *filename __attribute__((unused)), const char *function __attribute__((unused)), int32_t line)
 {
     ffmpeg_printf(100, "::%d requesting mutex\n", line);
-    static bool mutexInitialized = false;
-
-    if (!mutexInitialized)
-    {
-        pthread_rwlock_init(&mutex, NULL);
-        mutexInitialized = true;
-    }
-
     if(type == 0)
     {
         pthread_rwlock_rdlock(&mutex);
@@ -182,17 +194,6 @@ static void releaseMutex(const char *filename __attribute__((unused)), const con
 
 static void getSeekMutex()
 {
-    static bool mutexInitialized = false;
-    /* This is not perfect solution because
-     * there could be race conditions and theoretically pthread_mutex_init
-     * could be called twice, but anyway
-     */
-    if (!mutexInitialized)
-    {
-        pthread_mutex_init(&seek_mutex, NULL);
-        mutexInitialized = true;
-    }
-
     pthread_mutex_lock(&seek_mutex);
 }
 
@@ -209,9 +210,39 @@ static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_
      * avformat structures, during write time
      */
     int32_t ret = 0;
+    Context_t *ctx = context;
+    uint8_t **extra;
+    uint32_t size;
+    uint8_t *saved, *copy = NULL;
+    if (WriteFun == ctx->output->subtitle->Write)
+    {
+        SubtitleOut_t *out = privateData;
+        extra = &out->extradata;
+        size = out->extralen;
+    }
+    else
+    {
+        AudioVideoOut_t *out = privateData;
+        extra = &out->extradata;
+        size = out->extralen;
+    }
+    saved = *extra;
+    if (saved && size)
+    {
+        copy = malloc(size);
+        if (!copy)
+        {
+            ffmpeg_err("allocating output codec data failed\n");
+            return -1;
+        }
+        memcpy(copy, saved, size);
+        *extra = copy;
+    }
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     ret = WriteFun(context, privateData);
     getMutex(__FILE__, __FUNCTION__,__LINE__);
+    *extra = saved;
+    free(copy);
     return ret;
 }
 
@@ -238,6 +269,11 @@ static int32_t aac_latm_software_decode = 1;
 static int32_t aac_latm_software_decode = 0;
 #endif
 
+/* Max. allowed difference (ms) between stream and smoothed AAC PTS,
+ * 0 - smoothing disabled.
+ */
+static int32_t aac_pts_dejitter_ms = 60;
+
 static int32_t ac3_software_decode = 0;
 static int32_t eac3_software_decode = 0;
 static int32_t dts_software_decode = 0;
@@ -256,6 +292,9 @@ static int32_t mp3_software_decode = 0;
 static int32_t rtmp_proto_impl = 0; // 0 - auto, 1 - native, 2 - librtmp
 
 static int32_t g_sel_program_id = -1;
+static int32_t g_quality_mode;
+static int32_t g_default_audio_only;
+static int32_t g_h264_max_width, g_h264_max_height;
 
 #ifdef HAVE_FLV2MPEG4_CONVERTER
 static int32_t flv2mpeg4_converter = 1;
@@ -277,6 +316,157 @@ void sel_program_id_set(const int32_t val)
     g_sel_program_id = val;
 }
 
+void adaptive_quality_set(int32_t mode, int32_t default_audio)
+{
+    g_quality_mode = mode;
+    g_default_audio_only = default_audio;
+}
+
+void h264_resolution_limit_set(int32_t width, int32_t height)
+{
+    g_h264_max_width = width;
+    g_h264_max_height = height;
+}
+
+static int video_allowed(AVStream *stream)
+{
+    AVCodecParameters *par = get_codecpar(stream);
+    return par->codec_type == AVMEDIA_TYPE_VIDEO &&
+           !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
+           (par->codec_id != AV_CODEC_ID_H264 ||
+            ((!g_h264_max_width || par->width <= g_h264_max_width) &&
+             (!g_h264_max_height || par->height <= g_h264_max_height)));
+}
+
+static int64_t variant_bandwidth(AVDictionary *metadata)
+{
+    AVDictionaryEntry *tag = av_dict_get(metadata, "variant_bitrate", NULL, 0);
+    char *end;
+    long long value;
+    if (!tag)
+        return 0;
+    errno = 0;
+    value = strtoll(tag->value, &end, 10);
+    if (errno || *end || value < 0)
+    {
+        ffmpeg_err("invalid variant bandwidth: %s\n", tag->value);
+        return 0;
+    }
+    return value;
+}
+
+static AVProgram *select_program(AVFormatContext *av)
+{
+    AVProgram *best = NULL, *audio = NULL;
+    int64_t bandwidth = 0;
+    unsigned int i, j;
+    for (i = 0; i < av->nb_programs; i++)
+    {
+        AVProgram *p = av->programs[i];
+        int64_t candidate;
+        int has_video = 0, has_audio = 0;
+        if (!p->nb_stream_indexes)
+            continue;
+        if (g_sel_program_id > 0)
+        {
+            if (p->id == g_sel_program_id)
+                return p;
+            continue;
+        }
+        for (j = 0; j < p->nb_stream_indexes; j++)
+        {
+            AVStream *stream = av->streams[p->stream_index[j]];
+            has_audio |= get_codecpar(stream)->codec_type == AVMEDIA_TYPE_AUDIO;
+            has_video |= get_codecpar(stream)->codec_type == AVMEDIA_TYPE_VIDEO &&
+                         !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC);
+            if (video_allowed(stream))
+                break;
+        }
+        if (j == p->nb_stream_indexes)
+        {
+            if (!has_video && has_audio && !audio)
+                audio = p;
+            continue;
+        }
+        candidate = variant_bandwidth(p->metadata);
+        if (!best || (g_quality_mode == 1 ? candidate < bandwidth : candidate > bandwidth))
+        {
+            best = p;
+            bandwidth = candidate;
+        }
+    }
+    return best ? best : (g_sel_program_id > 0 ? NULL : audio);
+}
+
+static int select_dash_video(AVFormatContext *av)
+{
+    int best = -1;
+    int64_t bandwidth = 0, resolution = 0;
+    unsigned int i;
+    for (i = 0; i < av->nb_streams; i++)
+    {
+        AVStream *stream = av->streams[i];
+        AVCodecParameters *par = get_codecpar(stream);
+        int64_t candidate, pixels;
+        if (!video_allowed(stream))
+            continue;
+        candidate = variant_bandwidth(stream->metadata);
+        pixels = (int64_t)par->width * par->height;
+        if (best < 0 ||
+            (g_quality_mode == 1 ? candidate < bandwidth : candidate > bandwidth) ||
+            (candidate == bandwidth && (g_quality_mode == 1 ? pixels < resolution : pixels > resolution)))
+        {
+            best = i;
+            bandwidth = candidate;
+            resolution = pixels;
+        }
+    }
+    return best;
+}
+
+static int subtitle_is_forced(AVStream *stream)
+{
+    AVDictionaryEntry *title;
+    const char *p;
+    if (stream->disposition & AV_DISPOSITION_FORCED)
+        return 1;
+    title = av_dict_get(stream->metadata, "title", NULL, 0);
+    if (!title)
+        return 0;
+    for (p = title->value; *p; p++)
+    {
+        if ((p == title->value || !isalnum((unsigned char)p[-1])) &&
+            !strncasecmp(p, "forced", 6) && !isalnum((unsigned char)p[6]))
+            return 1;
+    }
+    return 0;
+}
+
+static int is_hls_input(const AVFormatContext *av)
+{
+    return av->iformat &&
+        (av_match_name("hls", av->iformat->name) ||
+         av_match_name("applehttp", av->iformat->name));
+}
+
+static int packet_matches_track(const Track_t *track, unsigned int context_index,
+                                const AVStream *stream)
+{
+    return track && track->AVIdx == context_index && track->stream == stream;
+}
+
+static void select_subtitle_stream(AVFormatContext *av, int id)
+{
+    unsigned int i;
+    if (!av->iformat || (!is_hls_input(av) &&
+                         strcmp(av->iformat->name, "dash")))
+        return;
+    for (i = 0; i < av->nb_streams; i++)
+        if (get_codecpar(av->streams[i])->codec_type == AVMEDIA_TYPE_SUBTITLE)
+            av->streams[i]->discard = av->streams[i]->id == id ?
+                AVDISCARD_DEFAULT : AVDISCARD_ALL;
+}
+
 void wma_software_decoder_set(const int32_t val)
 {
     wma_software_decode = val;
@@ -290,6 +480,11 @@ void aac_software_decoder_set(const int32_t val)
 void aac_latm_software_decoder_set(const int32_t val)
 {
     aac_latm_software_decode = val;
+}
+
+void aac_pts_dejitter_set(const int32_t val)
+{
+    aac_pts_dejitter_ms = val > 0 ? val : 0;
 }
 
 void ac3_software_decoder_set(const int32_t val)
@@ -726,6 +921,8 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
 
 static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t pts)
 {
+    if (pts == AV_NOPTS_VALUE)
+        return INVALID_PTS_VALUE;
     if (time_base.den > 0)
     {
         pts = av_rescale(pts, (int64_t)time_base.num * 90000, time_base.den);
@@ -750,13 +947,126 @@ static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t
 
 static int64_t calcPts(uint32_t avContextIdx, AVStream *stream, int64_t pts)
 {
-    if (!stream || pts == (int64_t)AV_NOPTS_VALUE)
-    {
-        ffmpeg_err("stream / packet null\n");
+    (void)avContextIdx;
+    if (!stream)
         return INVALID_PTS_VALUE;
+    return calcConvertedPts(stream, stream->time_base, pts, 0);
+}
+
+static int64_t calcDts(uint32_t avContextIdx, AVStream *stream, int64_t pts)
+{
+    (void)avContextIdx;
+    if (!stream)
+        return INVALID_PTS_VALUE;
+    return calcConvertedPts(stream, stream->time_base, pts, 1);
+}
+
+static int64_t calcConvertedPts(AVStream *stream, AVRational time_base, int64_t pts, int dts)
+{
+    int kind = get_codecpar(stream)->codec_type == AVMEDIA_TYPE_AUDIO;
+    int64_t raw, corrected;
+    if (pts == AV_NOPTS_VALUE || time_base.den <= 0 || time_base.num <= 0)
+        return INVALID_PTS_VALUE;
+    raw = av_rescale_q(pts, time_base, (AVRational){1, 90000});
+    if (dts || get_codecpar(stream)->codec_type == AVMEDIA_TYPE_SUBTITLE)
+        corrected = pts_clock_map(&ptsClock, kind, raw);
+    else
+        corrected = pts_clock_update(&ptsClock, kind, stream, raw, av_gettime_relative());
+    if (corrected < 0 || corrected == PTS_CLOCK_INVALID)
+        return INVALID_PTS_VALUE;
+    return corrected & (PTS_CLOCK_WRAP - 1);
+}
+
+/* Some muxers stamp AAC frames from a coarse clock, so PES PTS jitter
+ * around the real sample position (e.g. +-15 ms sawtooth). HW decoders
+ * (Broadcom) do TSM per PES and react to such jumps with gaps/drops,
+ * which is audible as periodic stuttering. To avoid it, PTS of AAC
+ * frames are generated from the number of injected samples and the
+ * stream PTS is used only to (re)synchronize.
+ */
+typedef struct
+{
+    int64_t  anchorPts;  // 90 kHz, INVALID_PTS_VALUE - not synchronized
+    int64_t  samples;    // samples injected since anchorPts
+    int32_t  sampleRate;
+    int32_t  trackId;
+    uint32_t avIdx;
+} AacPtsDejitter_t;
+
+static void aac_pts_dejitter_reset(AacPtsDejitter_t *s)
+{
+    s->anchorPts  = INVALID_PTS_VALUE;
+    s->samples    = 0;
+    s->sampleRate = 0;
+    s->trackId    = -1;
+    s->avIdx      = 0;
+}
+
+static int32_t aac_get_frame_samples(const AVPacket *packet, AVStream *stream, int32_t *sampleRate)
+{
+    static const int32_t adtsSampleRates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};
+    const uint8_t *d = packet->data;
+
+    if (d && packet->size >= 7 && 0xFF == d[0] && 0xF0 == (d[1] & 0xF6))
+    {
+        uint32_t sfi = (d[2] >> 2) & 0x0F;
+        if (sfi < sizeof(adtsSampleRates) / sizeof(adtsSampleRates[0]))
+        {
+            *sampleRate = adtsSampleRates[sfi];
+            return ((d[6] & 0x03) + 1) * 1024;
+        }
+        return 0;
     }
 
-    return doCalcPts(avContextTab[avContextIdx]->start_time, stream->time_base, pts);
+    *sampleRate = get_codecpar(stream)->sample_rate;
+    if (*sampleRate <= 0)
+    {
+        return 0;
+    }
+
+    if (packet->duration > 0)
+    {
+        return (int32_t)av_rescale_q(packet->duration, stream->time_base, (AVRational){1, *sampleRate});
+    }
+
+    return get_codecpar(stream)->frame_size > 0 ? get_codecpar(stream)->frame_size : 0;
+}
+
+static int64_t aac_pts_dejitter(AacPtsDejitter_t *s, const AVPacket *packet, AVStream *stream, int32_t trackId, uint32_t avIdx, int64_t pts)
+{
+    int32_t sampleRate = 0;
+    int32_t frameSamples = 0;
+
+    if (pts == INVALID_PTS_VALUE || 0 == aac_pts_dejitter_ms ||
+        (frameSamples = aac_get_frame_samples(packet, stream, &sampleRate)) <= 0)
+    {
+        aac_pts_dejitter_reset(s);
+        return pts;
+    }
+
+    if (s->anchorPts != INVALID_PTS_VALUE && s->sampleRate == sampleRate &&
+        s->trackId == trackId && s->avIdx == avIdx)
+    {
+        int64_t expected = (s->anchorPts + av_rescale(s->samples, 90000, sampleRate)) & 0x1FFFFFFFFLL;
+        /* difference with 33-bit PTS wrap-around handling */
+        int64_t diff = ((pts - expected + 0x100000000LL) & 0x1FFFFFFFFLL) - 0x100000000LL;
+
+        if (FFABS(diff) <= (int64_t)aac_pts_dejitter_ms * 90)
+        {
+            ffmpeg_printf(200, "AAC PTS %"PRId64" -> %"PRId64" (diff %"PRId64")\n", pts, expected, diff);
+            s->samples += frameSamples;
+            return expected;
+        }
+
+        ffmpeg_printf(10, "AAC PTS resync, diff %"PRId64" ms\n", diff / 90);
+    }
+
+    s->anchorPts  = pts;
+    s->samples    = frameSamples;
+    s->sampleRate = sampleRate;
+    s->trackId    = trackId;
+    s->avIdx      = avIdx;
+    return pts;
 }
 
 typedef struct
@@ -1986,8 +2296,199 @@ static void audio_atmos_hook(int32_t track_id, int codec_id, const uint8_t *data
         eac3_atmos_feed(track_id, data, size);
 }
 
+static int network_read_retry(int64_t start, int64_t now)
+{
+    return now >= start && now - start < 10 * AV_TIME_BASE;
+}
+
+static int64_t context_duration_ms(AVFormatContext *av)
+{
+    return av->duration > 0 && av->duration != AV_NOPTS_VALUE ? av->duration / 1000 : 0;
+}
+
+static int64_t ts_seek_position(int64_t time_us, int64_t duration_us,
+                                int64_t bytes, int packet_size)
+{
+    int64_t target;
+    if (time_us < 0 || duration_us <= 0 || bytes <= 0 ||
+        (packet_size != 188 && packet_size != 192 && packet_size != 204))
+        return -1;
+    target = av_rescale(time_us, bytes, duration_us);
+    if (target < 0)
+        return -1;
+    if (target >= bytes)
+        target = bytes > packet_size ? bytes - packet_size : 0;
+    return target / packet_size * packet_size;
+}
+
+static int fast_http_ts_seek(AVFormatContext *av, int64_t relative_us)
+{
+    int64_t packet_size, target;
+    if (!av->pb || !(av->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
+        !av->iformat || strcmp(av->iformat->name, "mpegts") ||
+        !av->url || (strncmp(av->url, "http://", 7) && strncmp(av->url, "https://", 8)) ||
+        av_opt_get_int(av->priv_data, "ts_packetsize", 0, &packet_size) < 0)
+        return -1;
+    target = ts_seek_position(relative_us, av->duration, avio_size(av->pb), packet_size);
+    if (target < 0)
+        return -1;
+    return avformat_seek_file(av, -1, INT64_MIN, target, INT64_MAX, AVSEEK_FLAG_BYTE);
+}
+
+static char *json_escape_metadata(const char *text)
+{
+    const uint8_t *p = (const uint8_t *)text, *end = p + strlen(text);
+    char *result, *out;
+    if ((size_t)(end - p) > (SIZE_MAX - 1) / 6 ||
+        !(result = av_malloc((end - p) * 6 + 1)))
+    {
+        ffmpeg_err("cannot allocate escaped radio metadata\n");
+        return NULL;
+    }
+    out = result;
+    while (p < end)
+    {
+        if (*p == '"' || *p == '\\')
+        {
+            *out++ = '\\';
+            *out++ = *p++;
+        }
+        else if (*p < 32)
+        {
+            out += sprintf(out, "\\u%04x", *p++);
+        }
+        else if (*p >= 128)
+        {
+            const uint8_t *next = p;
+            int32_t code;
+            if (av_utf8_decode(&code, &next, end, 0) >= 0)
+            {
+                memcpy(out, p, next - p);
+                out += next - p;
+                p = next;
+            }
+            else
+                out += sprintf(out, "\\u%04x", *p++);
+        }
+        else
+            *out++ = *p++;
+    }
+    *out = 0;
+    return result;
+}
+
+static char *radio_message(const char *rt, const char *title, const char *artist)
+{
+    char *r = json_escape_metadata(rt), *t = json_escape_metadata(title);
+    char *a = json_escape_metadata(artist), *message = NULL;
+    if (r && t && a)
+    {
+        message = av_asprintf("{\"m_t\":{\"rt\":\"%s\",\"t\":\"%s\",\"a\":\"%s\"}}\n", r, t, a);
+        if (!message)
+            ffmpeg_err("cannot allocate radio metadata notification\n");
+    }
+    av_free(r);
+    av_free(t);
+    av_free(a);
+    return message;
+}
+
+static char *radio_icy_message(const char *packet)
+{
+    const char *start = strstr(packet, "StreamTitle='"), *end;
+    char *full, *artist = NULL, *message, *sep;
+    if (!start || !(end = strstr(start += 13, "';")))
+        return NULL;
+    full = av_strndup(start, end - start);
+    if (!full)
+    {
+        ffmpeg_err("cannot allocate ICY title\n");
+        return NULL;
+    }
+    sep = strstr(full, " - ");
+    if (sep)
+        artist = av_strndup(full, sep - full);
+    if (sep && !artist)
+    {
+        ffmpeg_err("cannot allocate ICY artist\n");
+        av_free(full);
+        return NULL;
+    }
+    message = radio_message(full, sep ? sep + 3 : full, artist ? artist : "");
+    av_free(artist);
+    av_free(full);
+    return message;
+}
+
+static void radio_metadata_update(AVFormatContext *av, AVStream *stream,
+                                  char **last, int has_video)
+{
+    uint8_t *icy = NULL;
+    char *message = NULL, *rt;
+    AVDictionaryEntry *title, *artist;
+    AVDictionary *metadata = av->metadata;
+    int updated = av->event_flags & AVFMT_EVENT_FLAG_METADATA_UPDATED;
+    if (has_video)
+        return;
+    if (stream && (stream->event_flags & AVSTREAM_EVENT_FLAG_METADATA_UPDATED))
+    {
+        updated = 1;
+        metadata = stream->metadata;
+        stream->event_flags &= ~AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
+    }
+    if (av->pb && av_opt_get(av->pb, "icy_metadata_packet", AV_OPT_SEARCH_CHILDREN, &icy) >= 0 && icy)
+        message = radio_icy_message((char *)icy);
+    av_free(icy);
+    if (!message && (updated || !*last))
+    {
+        title = av_dict_get(metadata, "title", NULL, 0);
+        if (!title)
+            title = av_dict_get(metadata, "TIT2", NULL, 0);
+        artist = av_dict_get(metadata, "artist", NULL, 0);
+        if (!artist)
+            artist = av_dict_get(metadata, "TPE1", NULL, 0);
+        if (updated || title || artist)
+        {
+            rt = av_asprintf("%s%s%s", artist ? artist->value : "",
+                             artist && title ? " - " : "", title ? title->value : "");
+            if (rt)
+            {
+                message = radio_message(rt, title ? title->value : "", artist ? artist->value : "");
+                av_free(rt);
+            }
+            else
+                ffmpeg_err("cannot allocate radio text\n");
+        }
+    }
+    av->event_flags &= ~AVFMT_EVENT_FLAG_METADATA_UPDATED;
+    if (message && (!*last || strcmp(message, *last)))
+    {
+        E2iSendMsg("%s", message);
+        av_freep(last);
+        *last = message;
+    }
+    else
+        av_free(message);
+}
+
 static void FFMPEGThread(Context_t *context)
 {
+    char *lastRadioMessage[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
+    int pcm_export_failed = 0;
+    dashAudioResetPending = 0;
+    ptsClock.preserve_timeline = context->playback->isDash;
+    pts_clock_reset(&ptsClock, 0);
+    if (avContextTab[0] && (use_custom_io[0] || avContextTab[0]->duration > 0) &&
+        avContextTab[0]->start_time != AV_NOPTS_VALUE)
+    {
+        ptsClock.base = av_rescale_q(avContextTab[0]->start_time, AV_TIME_BASE_Q, (AVRational){1, 90000});
+        ptsClock.base_ready = 1;
+    }
+    if (avContextTab[0])
+        ffmpeg_printf(10, "playback timing: duration_us=%"PRId64" start_us=%"PRId64
+                      " format=%s preserve_timeline=%d\n",
+                      avContextTab[0]->duration, avContextTab[0]->start_time,
+                      avContextTab[0]->iformat->name, ptsClock.preserve_timeline);
     char threadname[17];
     strncpy(threadname, __func__, sizeof(threadname));
     threadname[16] = 0;
@@ -1997,6 +2498,9 @@ static void FFMPEGThread(Context_t *context)
     int64_t lastPts = -1;
     int64_t currentVideoPts = -1;
     int64_t currentAudioPts = -1;
+    int64_t lastVideoWriteUs = 0;
+    const AVStream *lastAudioStream = NULL;
+    uint32_t lastAudioContextIdx = 0;
 
     /* lastVideoDts and lastAudioDts
      * used in isTSLiveMode
@@ -2005,6 +2509,9 @@ static void FFMPEGThread(Context_t *context)
     int64_t lastAudioDts = -1;
 
     int64_t multiContextLastPts[IPTV_AV_CONTEXT_MAX_NUM] = {INVALID_PTS_VALUE, INVALID_PTS_VALUE};
+
+    AacPtsDejitter_t aacPtsDejitter;
+    aac_pts_dejitter_reset(&aacPtsDejitter);
 
     int64_t showtime = 0;
     int64_t bofcount = 0;
@@ -2032,15 +2539,17 @@ static void FFMPEGThread(Context_t *context)
 #endif
     int32_t out_channels = 2;
     uint32_t cAVIdx = 0;
+    int64_t readErrorSince[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
 
     // for seek
     int64_t seek_target_seconds = 0;
     bool do_seek_target_seconds = false;
+    bool zero_seek = false;
 
     int64_t seek_target_bytes = 0;
     bool do_seek_target_bytes = false;
     int64_t prev_seek_time_sec = -1;
-    void *stamp;
+    void *stamp = context->playback->stamp;
 
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
 #ifdef __sh__
@@ -2086,7 +2595,7 @@ static void FFMPEGThread(Context_t *context)
         }
 #endif
 
-        if (context->playback->isSeeking)
+        if (context->playback->isSeeking || context->playback->isAudioSwitching)
         {
             ffmpeg_printf(10, "seeking\n");
             reset_finish_timeout();
@@ -2096,7 +2605,8 @@ static void FFMPEGThread(Context_t *context)
 
         getMutex(__FILE__, __FUNCTION__,__LINE__);
 
-        if (!context->playback || !context->playback->isPlaying)
+        if (!context->playback || !context->playback->isPlaying ||
+            context->playback->isSeeking || context->playback->isAudioSwitching)
         {
             releaseMutex(__FILE__, __FUNCTION__,__LINE__);
             if(!isWaitingForFinish)
@@ -2111,33 +2621,53 @@ static void FFMPEGThread(Context_t *context)
         {
             do_seek_target_seconds = g_do_seek_target_seconds;
             seek_target_seconds = g_seek_target_seconds;
+            zero_seek = g_zero_seek;
             stamp = g_stamp;
             g_do_seek_target_seconds = false;
         }
         releaseSeekMutex();
 
+        if (dashAudioResetPending)
+        {
+            dashAudioResetPending = 0;
+            restart_audio_resampling = 1;
+            currentVideoPts = currentAudioPts = -1;
+            aac_pts_dejitter_reset(&aacPtsDejitter);
+            wrapped_avcodec_flush_buffers(0);
+        }
         if (do_seek_target_seconds || do_seek_target_bytes)
         {
+            if (!zero_seek || do_seek_target_bytes)
+                pts_clock_reset(&ptsClock, 1);
             isWaitingForFinish = 0;
             if (do_seek_target_seconds)
             {
                 ffmpeg_printf(10, "seek_target_seconds[%"PRId64"]\n", seek_target_seconds);
+                int64_t relative_us = seek_target_seconds;
                 uint32_t i = 0;
                 for(; i<IPTV_AV_CONTEXT_MAX_NUM; i+=1)
                 {
+                    readErrorSince[i] = 0;
                     multiContextLastPts[i] = INVALID_PTS_VALUE;
                     if(NULL != avContextTab[i])
                     {
+                        int64_t target_us = relative_us;
                         if (i == 1)
                         {
                             prev_seek_time_sec = seek_target_seconds;
                         }
                         if (avContextTab[i]->start_time != AV_NOPTS_VALUE)
                         {
-                            seek_target_seconds += avContextTab[i]->start_time;
+                            target_us = av_sat_add64(target_us, avContextTab[i]->start_time);
                         }
-                        //av_seek_frame(avContextTab[i], -1, seek_target_seconds, 0);
-                        avformat_seek_file(avContextTab[i], -1, INT64_MIN, seek_target_seconds, INT64_MAX, 0);
+                        if (!(zero_seek && !use_custom_io[i] && avContextTab[i]->duration <= 0) &&
+                            (zero_seek || fast_http_ts_seek(avContextTab[i], relative_us) < 0))
+                        {
+                            if (avformat_seek_file(avContextTab[i], -1, INT64_MIN, target_us, INT64_MAX, 0) < 0)
+                                ffmpeg_err("timestamp seek failed for context %u\n", i);
+                            else if (zero_seek)
+                                pts_clock_reset(&ptsClock, 1);
+                        }
                     }
                     else
                     {
@@ -2165,6 +2695,7 @@ static void FFMPEGThread(Context_t *context)
             currentVideoPts = -1;
             currentAudioPts = -1;
             latestPts = 0;
+            aac_pts_dejitter_reset(&aacPtsDejitter);
 
             // flush streams
             uint32_t i = 0;
@@ -2222,6 +2753,7 @@ static void FFMPEGThread(Context_t *context)
 
         if (bufferSize > 0)
         {
+            stamp = context->playback->stamp;
             LinuxDvbBuffSetStamp(stamp);
         }
 
@@ -2232,6 +2764,10 @@ static void FFMPEGThread(Context_t *context)
 
         if (!isWaitingForFinish && (ffmpegStatus == 0) )
         {
+            radio_metadata_update(avContextTab[cAVIdx],
+                avContextTab[cAVIdx]->streams[packet.stream_index],
+                &lastRadioMessage[cAVIdx], context->playback->isVideo);
+            readErrorSince[cAVIdx] = 0;
             int64_t pts = 0;
             int64_t dts = 0;
             Track_t *videoTrack = NULL;
@@ -2240,7 +2776,8 @@ static void FFMPEGThread(Context_t *context)
 
             int32_t pid = avContextTab[cAVIdx]->streams[packet.stream_index]->id;
 
-            multiContextLastPts[cAVIdx] = calcPts(cAVIdx, avContextTab[cAVIdx]->streams[packet.stream_index], packet.pts);
+            multiContextLastPts[cAVIdx] = doCalcPts(avContextTab[cAVIdx]->start_time,
+                avContextTab[cAVIdx]->streams[packet.stream_index]->time_base, packet.pts);
             ffmpeg_printf(200, "Ctx %d PTS: %"PRId64" PTS[1] %"PRId64"\n", cAVIdx, multiContextLastPts[cAVIdx], multiContextLastPts[1]);
 
             reset_finish_timeout();
@@ -2268,7 +2805,8 @@ static void FFMPEGThread(Context_t *context)
 
             ffmpeg_printf(200, "packet.size %d - index %d\n", packet.size, pid);
 
-            if (videoTrack && (videoTrack->AVIdx == cAVIdx) && (videoTrack->Id == pid))
+            if (packet_matches_track(videoTrack, cAVIdx,
+                                     avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
                 updateHevcHdr(context, videoTrack, cAVIdx, &packet);
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
@@ -2290,9 +2828,37 @@ static void FFMPEGThread(Context_t *context)
                 else
 #endif
                 {
+                    AVStream *stream = videoTrack->stream;
                     bool skipPacket = false;
-                    currentVideoPts = videoTrack->pts = pts = calcPts(cAVIdx, videoTrack->stream, packet.pts);
-                    videoTrack->dts = dts = calcPts(cAVIdx, videoTrack->stream, packet.dts);
+                    int first_packet = currentVideoPts == -1;
+                    currentVideoPts = videoTrack->pts = pts = calcPts(cAVIdx, stream, packet.pts);
+                    videoTrack->dts = dts = calcDts(cAVIdx, stream, packet.dts);
+                    if (first_packet && stream)
+                        ffmpeg_printf(10, "first video: raw_pts=%"PRId64" tb=%d/%d pts90=%"PRId64" dts90=%"PRId64"\n",
+                                      packet.pts, stream->time_base.num,
+                                      stream->time_base.den, pts, dts);
+                    if (first_packet)
+                        ffmpeg_printf(10, "video clock: raw90=%"PRId64" base90=%"PRId64
+                                      " offset90=%"PRId64"\n",
+                                      ptsClock.track[0].raw, ptsClock.base,
+                                      ptsClock.track[0].offset);
+                    if (pts == INVALID_PTS_VALUE)
+                    {
+                        wrapped_packet_unref(&packet);
+                        releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                        continue;
+                    }
+                    {
+                        int64_t now = av_gettime_relative();
+                        if (pts_clock_video_gap(now, lastVideoWriteUs, PlaybackLastContinue(),
+                                                context->playback->isPaused))
+                        {
+                            ffmpeg_printf(10, "Reinitializing video output after a long gap\n");
+                            if (context->output->video->Command(context, OUTPUT_SWITCH, "video") < 0)
+                                ffmpeg_err("video output recovery failed\n");
+                        }
+                        lastVideoWriteUs = now;
+                    }
 
                     if ((currentVideoPts != INVALID_PTS_VALUE) && (currentVideoPts > latestPts))
                     {
@@ -2356,11 +2922,20 @@ static void FFMPEGThread(Context_t *context)
                     }
                 }
             }
-            else if (audioTrack && (audioTrack->AVIdx == cAVIdx) && (audioTrack->Id == pid))
+            else if (packet_matches_track(audioTrack, cAVIdx,
+                                          avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
+                AVStream *stream = audioTrack->stream;
                 uint8_t skipPacket = 0;
-                currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, audioTrack->stream, packet.pts);
-                dts = calcPts(cAVIdx, audioTrack->stream, packet.dts);
+                int64_t mapped_pts;
+                int first_packet = currentAudioPts == -1;
+                currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, stream, packet.pts);
+                mapped_pts = pts;
+                dts = calcDts(cAVIdx, stream, packet.dts);
+                if (first_packet && stream)
+                    ffmpeg_printf(10, "first audio: raw_pts=%"PRId64" tb=%d/%d pts90=%"PRId64" dts90=%"PRId64"\n",
+                                  packet.pts, stream->time_base.num,
+                                  stream->time_base.den, pts, dts);
 
                 if ((currentAudioPts != INVALID_PTS_VALUE) && (currentAudioPts > latestPts) && (!videoTrack))
                 {
@@ -2401,6 +2976,29 @@ static void FFMPEGThread(Context_t *context)
                 /* live Atmos (JOC) detection on the selected E-AC-3 track */
                 if (packet.data && packet.size > 0)
                     audio_atmos_hook(audioTrack->Id, (int)get_codecpar(audioTrack->stream)->codec_id, packet.data, (size_t)packet.size);
+                if (audioTrack->inject_raw_pcm != 1 && audioTrack->inject_as_pcm != 1 &&
+                    (get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC ||
+                     get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC_LATM))
+                {
+                    pts = aac_pts_dejitter(&aacPtsDejitter, &packet, audioTrack->stream, audioTrack->Id, cAVIdx, pts);
+                }
+                if (lastAudioStream != stream || lastAudioContextIdx != cAVIdx)
+                {
+                    ffmpeg_printf(10, "audio selection timing: context=%u stream=%d raw_pts=%"PRId64
+                                  " tb=%d/%d pts90=%"PRId64" video_pts90=%"PRId64"\n",
+                                  cAVIdx, stream->index, packet.pts, stream->time_base.num,
+                                  stream->time_base.den, pts, currentVideoPts);
+                    ffmpeg_printf(10, "audio selection clock: raw90=%"PRId64
+                                  " video_raw90=%"PRId64" base90=%"PRId64
+                                  " audio_offset90=%"PRId64" video_offset90=%"PRId64
+                                  " before_aac90=%"PRId64" preserve_timeline=%d\n",
+                                  ptsClock.track[1].raw, ptsClock.track[0].raw,
+                                  ptsClock.base, ptsClock.track[1].offset,
+                                  ptsClock.track[0].offset, mapped_pts,
+                                  ptsClock.preserve_timeline);
+                    lastAudioStream = stream;
+                    lastAudioContextIdx = cAVIdx;
+                }
 
                 pcmPrivateData_t pcmExtradata;
 #if HAVE_CH_LAYOUT
@@ -2474,6 +3072,13 @@ static void FFMPEGThread(Context_t *context)
                     while(packet.size > 0)
 #endif
                     {
+                        Track_t *selected = NULL;
+                        context->manager->audio->Command(context, MANAGER_GET_TRACK, &selected);
+                        if (!selected || selected->avCodecCtx != c ||
+                            !packet_matches_track(selected, cAVIdx,
+                                avContextTab[cAVIdx]->streams[packet.stream_index]))
+                            break;
+                        audioTrack = selected;
                         if(do_seek_target_seconds || do_seek_target_bytes)
                         {
                             break;
@@ -2712,6 +3317,7 @@ static void FFMPEGThread(Context_t *context)
 #endif
                                 swr_free(&swr);
                                 swr = NULL;
+                                continue;
                             }
                         }
 
@@ -2736,6 +3342,12 @@ static void FFMPEGThread(Context_t *context)
                          * has 8 slots which would overflow for 7.1.4 (12 channels). */
                         out_samples = swr_convert(swr, &output[0], out_samples,
                                                   (const uint8_t **) decoded_frame->extended_data, in_samples);
+                        if (out_samples < 0)
+                        {
+                            ffmpeg_err("PCM resampling failed: %d\n", out_samples);
+                            av_freep(&output[0]);
+                            continue;
+                        }
 
                         //////////////////////////////////////////////////////////////////////
                         // Update pcmExtradata according to decode parameters
@@ -2775,6 +3387,20 @@ static void FFMPEGThread(Context_t *context)
                         else
                         {
                             restart_audio_resampling = 0;
+                        }
+                        if (pcm_audio_export_enabled && !pcm_export_failed && !context->playback->BackWard)
+                        {
+                            int result = pcm_export_write(&pcmExport, output[0], avOut.len,
+                                pcmExtradata.sample_rate, pcmExtradata.channels,
+                                pcmExtradata.codec_id == AV_CODEC_ID_PCM_S16BE);
+                            if (result < 0)
+                            {
+                                ffmpeg_err("PCM export disabled for this session: %s\n", strerror(errno));
+                                pcm_export_failed = 1;
+                                pcm_export_close(&pcmExport);
+                            }
+                            else if (result && pcmExport.dropped_chunks == 1)
+                                ffmpeg_printf(0, "PCM export dropping chunks: reader absent, slow or disconnected\n");
                         }
                         av_freep(&output[0]);
                     }
@@ -2840,7 +3466,8 @@ static void FFMPEGThread(Context_t *context)
                     }
                 }
             }
-            else if (subtitleTrack && (subtitleTrack->Id == pid))
+            else if (packet_matches_track(subtitleTrack, cAVIdx,
+                                          avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
                 int64_t duration = -1;
                 int64_t pts = calcPts(cAVIdx, subtitleTrack->stream, packet.pts);
@@ -2879,6 +3506,30 @@ static void FFMPEGThread(Context_t *context)
         }
         else
         {
+            if (ffmpegStatus < 0 && ffmpegStatus != AVERROR_EOF &&
+                ffmpegStatus != AVERROR_EXIT && !PlaybackDieNow(0) &&
+                avContextTab[cAVIdx]->url &&
+                (!strncmp(avContextTab[cAVIdx]->url, "http://", 7) ||
+                 !strncmp(avContextTab[cAVIdx]->url, "https://", 8)))
+            {
+                int64_t now = av_gettime_relative();
+                if (!readErrorSince[cAVIdx])
+                {
+                    readErrorSince[cAVIdx] = now;
+                    ffmpeg_err("Network read failed (%d), retrying for up to 10 seconds\n", ffmpegStatus);
+                }
+                if (network_read_retry(readErrorSince[cAVIdx], now))
+                {
+                    if (avContextTab[cAVIdx]->pb)
+                    {
+                        avContextTab[cAVIdx]->pb->eof_reached = 0;
+                        avContextTab[cAVIdx]->pb->error = 0;
+                    }
+                    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                    usleep(100000);
+                    continue;
+                }
+            }
             if( 0 != ffmpegStatus )
             {
                 static char errbuf[256];
@@ -2966,10 +3617,20 @@ static void FFMPEGThread(Context_t *context)
     mpeg4p2_context_close(mpeg4p2_context);
 #endif
 
-    hasPlayThreadStarted = 0;
+    {
+        unsigned int i;
+        for (i = 0; i < IPTV_AV_CONTEXT_MAX_NUM; i++)
+            av_free(lastRadioMessage[i]);
+    }
+    if (pcm_audio_export_enabled)
+    {
+        ffmpeg_printf(0, "PCM export dropped %"PRIu64" chunks\n", pcmExport.dropped_chunks);
+        pcm_export_close(&pcmExport);
+    }
     context->playback->isPlaying = 0;
     PlaybackDieNow(1);
     ffmpeg_printf(10, "terminating\n");
+    hasPlayThreadStarted = 0;
 }
 
 /* **************************** */
@@ -3006,14 +3667,6 @@ int SAM_ReadFunc(void *ptr, uint8_t *buffer, int lSize)
     if (!io->pMoovFile)
     {
         ret = (int)fread( (void *) buffer, (size_t) 1, (size_t) lSize, io->pFile );
-        /* 0 is no EOF for an AVIOContext, it would read again forever */
-        if (ret == 0)
-        {
-            if (feof(io->pFile))
-                return AVERROR_EOF;
-            if (ferror(io->pFile))
-                return AVERROR(errno ? errno : EIO);
-        }
     }
     else
     {
@@ -3040,10 +3693,12 @@ int SAM_ReadFunc(void *ptr, uint8_t *buffer, int lSize)
         }
 
         io->iOffset += ret;
-        if (ret == 0)
-        {
-            return AVERROR_EOF;
-        }
+    }
+    if (ret == 0 && !progressive_playback)
+    {
+        if (ferror(io->pFile) || (io->pMoovFile && ferror(io->pMoovFile)))
+            return AVERROR(errno ? errno : EIO);
+        return AVERROR_EOF;
     }
     return ret;
 }
@@ -3055,15 +3710,12 @@ int64_t SAM_SeekFunc(void *ptr, int64_t pos, int whence)
     int64_t ret = -1;
     if (!io->pMoovFile)
     {
-        if( AVSEEK_SIZE == whence )
+        if (whence == AVSEEK_SIZE)
         {
-            /* without a size FFmpeg takes the file as one of unknown length */
-            off_t curr = ftello(io->pFile);
-            if (fseeko(io->pFile, 0, SEEK_END) == 0)
-            {
-                ret = (int64_t)ftello(io->pFile);
-                fseeko(io->pFile, curr, SEEK_SET);
-            }
+            struct stat st;
+            if (fstat(fileno(io->pFile), &st) < 0)
+                return AVERROR(errno);
+            return st.st_size;
         }
         else
         {
@@ -3164,6 +3816,8 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     int32_t err = 0;
     AVInputFormat *fmt = NULL;
     avContextTab[AVIdx] = avformat_alloc_context();
+    if (!avContextTab[AVIdx])
+        return cERR_CONTAINER_FFMPEG_NOMEM;
     avContextTab[AVIdx]->interrupt_callback.callback = interrupt_cb;
     avContextTab[AVIdx]->interrupt_callback.opaque = context->playback;
 
@@ -3172,8 +3826,14 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
        0 == strncmp(filename, "file://", 7))
     {
         AVIOContext *avio_ctx = NULL;
-        custom_io_tab[AVIdx] = malloc(sizeof(CustomIOCtx_t));
-        memset(custom_io_tab[AVIdx], 0x00, sizeof(CustomIOCtx_t));
+        custom_io_tab[AVIdx] = calloc(1, sizeof(CustomIOCtx_t));
+        if (!custom_io_tab[AVIdx])
+        {
+            ffmpeg_err("cannot allocate custom IO context\n");
+            avformat_free_context(avContextTab[AVIdx]);
+            avContextTab[AVIdx] = NULL;
+            return cERR_CONTAINER_FFMPEG_NOMEM;
+        }
 
         custom_io_tab[AVIdx]->szFile = filename;
         custom_io_tab[AVIdx]->iFileSize = fileSize;
@@ -3446,20 +4106,34 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
         {
             /* when using with ArchivCZSK, then indicate DRM support */
+            /* hlavičky odovzdané cez -h nemusia končiť CRLF - doplniť oddeľovač, inak sa
+               nová hlavička zlepí s predchádzajúcou a na server sa nedostane */
+            AVDictionaryEntry *hdr = av_dict_get(avio_opts, "headers", NULL, 0);
+            if (hdr && hdr->value && hdr->value[0])
+            {
+                size_t hlen = strlen(hdr->value);
+                if (hlen < 2 || hdr->value[hlen - 2] != '\r' || hdr->value[hlen - 1] != '\n')
+                {
+                    av_dict_set(&avio_opts, "headers", "\r\n", AV_DICT_APPEND);
+                }
+            }
             av_dict_set(&avio_opts, "headers", "X-DRM-Api-Level: 1\r\n", AV_DICT_APPEND);
         }
     }
 
+    if (g_sel_program_id <= 0 && !g_h264_max_width && !g_h264_max_height)
+        av_dict_set(&avio_opts, "hls_quality_mode", g_quality_mode == 1 ? "1" : "2", 0);
+    if (g_default_audio_only)
+        av_dict_set(&avio_opts, "hls_audio_default_only", "1", 0);
     pavio_opts = &avio_opts;
 
     /* Cap the probe for local files; avformat_open_input ignores the
-     * matching av_dict keys, so pre-allocate the context and set them
-     * directly. Network URIs keep the defaults. */
+     * matching av_dict keys. Reuse the allocated context so its interrupt
+     * callback remains installed. Network URIs keep the defaults. */
     {
         const int is_local = (strstr(filename, "://") == NULL)
                           || (strncmp(filename, "file://", 7) == 0);
         if (is_local) {
-            avContextTab[AVIdx] = avformat_alloc_context();
             if (avContextTab[AVIdx]) {
                 avContextTab[AVIdx]->probesize            = 10000000;
                 avContextTab[AVIdx]->max_analyze_duration =  3000000;
@@ -3467,6 +4141,8 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         }
     }
 
+
+    av_dict_set(&avio_opts, "dash_subtitle_default_discard", "1", 0);
     if ((err = avformat_open_input(&avContextTab[AVIdx], filename, fmt, pavio_opts)) != 0)
     {
         if (rtmp_proto_impl == 0 && //err == AVERROR_UNKNOWN &&
@@ -3494,6 +4170,10 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             return cERR_CONTAINER_FFMPEG_OPEN;
         }
     }
+
+    if (AVIdx == 0)
+        context->playback->isDash = avContextTab[0]->iformat &&
+            !strcmp(avContextTab[0]->iformat->name, "dash");
 
     //ffmpeg5: error: assignment of member 'flags' in read-only object -> so commented out next line
     //avContextTab[AVIdx]->iformat->flags |= AVFMT_SEEK_TO_PTS;
@@ -3590,6 +4270,11 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
         return cERR_CONTAINER_FFMPEG_RUNNING;
     }
 
+    if (pcm_audio_export_enabled && pcm_export_init(&pcmExport, PCM_EXPORT_PATH) < 0)
+    {
+        ffmpeg_err("cannot initialize PCM export: %s\n", strerror(errno));
+        return cERR_CONTAINER_FFMPEG_INIT;
+    }
     /* initialize ffmpeg */
     wrapped_register_all();
     avformat_network_init();
@@ -3642,7 +4327,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
 
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
 
-    if (initial && context->manager->subtitle)
+    if (context->manager->subtitle)
     {
         context->manager->subtitle->Command(context, MANAGER_GET_TRACK, &currSubtitleTrack);
     }
@@ -3662,12 +4347,10 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         context->manager->audio->Command(context, MANAGER_INIT_UPDATE, NULL);
     }
 
-#if 0
     if (context->manager->subtitle)
     {
         context->manager->subtitle->Command(context, MANAGER_INIT_UPDATE, NULL);
     }
-#endif
 
     ffmpeg_printf(20, "dump format\n");
     av_dump_format(avContextTab[0], 0, filename, 0);
@@ -3681,6 +4364,8 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
             break;
         }
         AVFormatContext *avContext = avContextTab[cAVIdx];
+        select_subtitle_stream(avContext, currSubtitleTrack && currSubtitleTrack->AVIdx == cAVIdx ?
+                               currSubtitleTrack->Id : -1);
         uint32_t *stream_index = NULL;
         uint32_t nb_stream_indexes = 0;
 
@@ -3690,98 +4375,33 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         {
             uint32_t n = 0;
             ffmpeg_printf(1, "cAVIdx[%d]: stream with multi programs: num of programs %d\n", cAVIdx, avContext->nb_programs);
-            for (n = 0; n < avContext->nb_programs && (0 == nb_stream_indexes || stream_index == NULL); n++)
+            AVProgram *selected = select_program(avContext);
+            if (!selected)
             {
-                AVProgram *p = avContext->programs[n];
-                if (p->nb_stream_indexes)
-                {
-                    if (g_sel_program_id > 0)
-                    {
-                        if (g_sel_program_id == p->id)
-                        {
-                            stream_index = p->stream_index;
-                            nb_stream_indexes = p->nb_stream_indexes;
-                            ffmpeg_printf(1, "cAVIdx[%d]: select PROGRAM ID: %d\n", cAVIdx, (int32_t)p->id);
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        uint32_t m = 0;
-                        for (m = 0; m < p->nb_stream_indexes; m++)
-                        {
-                            AVStream *s = avContext->streams[p->stream_index[m]];
-                            if (get_codecpar(s)->codec_type == AVMEDIA_TYPE_VIDEO && get_codecpar(s)->width > 0)
-                            {
-                                ffmpeg_printf(1, "cAVIdx[%d]: PROGRAM ID: %d, width [%d]\n", cAVIdx, (int32_t)p->id, (int32_t)get_codecpar(s)->width);
-                                stream_index = p->stream_index;
-                                nb_stream_indexes = p->nb_stream_indexes;
-                                break;
-                            }
-                        }
-                    }
-                }
+                ffmpeg_err("no playable program matches the selection and video limits\n");
+                releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                return cERR_CONTAINER_FFMPEG_STREAM;
             }
+            stream_index = selected->stream_index;
+            nb_stream_indexes = selected->nb_stream_indexes;
         }
-
-        /* DASH lists every video representation as a stream and only the
-         * first video track plays: take the best one, as the HLS variants */
-        int32_t bestVideo = -1;
-        if (0 == strncmp(avContext->iformat->name, "dash", 4) && !av_dict_get(g_avio_opts, "video_rep_index", NULL, 0))
-        {
-            int64_t bestScore = -1;
-            int64_t bestRate = -1;
-            uint32_t i;
-            for (i = 0; i < avContext->nb_streams; i++)
-            {
-                AVCodecParameters *par = get_codecpar(avContext->streams[i]);
-                AVRational rate = get_frame_rate(avContext->streams[i]);
-                int64_t score;
-
-                if (par->codec_type != AVMEDIA_TYPE_VIDEO)
-                    continue;
-                score = (int64_t)par->width * par->height * (rate.den ? 1000 * rate.num / rate.den : 25000);
-                if (score > bestScore || (score == bestScore && par->bit_rate > bestRate))
-                {
-                    bestScore = score;
-                    bestRate = par->bit_rate;
-                    bestVideo = i;
-                }
-            }
-            ffmpeg_printf(1, "cAVIdx[%d]: DASH video stream %d\n", cAVIdx, bestVideo);
-        }
-
-        /* HLS gives every stream of a variant the number of the variant as id,
-         * and the packets go to the tracks by id: make the ids unique */
-        {
-            uint32_t i, j = 0;
-            for (i = 1; i < avContext->nb_streams; i++)
-            {
-                for (j = 0; j < i; j++)
-                {
-                    if (avContext->streams[i]->id == avContext->streams[j]->id)
-                        break;
-                }
-                if (j < i)
-                    break;
-            }
-            if (i < avContext->nb_streams)
-            {
-                ffmpeg_printf(1, "cAVIdx[%d]: stream id %d used twice, ids from the stream index\n", cAVIdx, avContext->streams[i]->id);
-                for (i = 0; i < avContext->nb_streams; i++)
-                    avContext->streams[i]->id = i;
-            }
-        }
+        int dash_video = -1;
+        int auto_dash = g_sel_program_id <= 0 && avContext->iformat &&
+                        !strcmp(avContext->iformat->name, "dash");
+        if (auto_dash)
+            dash_video = select_dash_video(avContext);
 
         int32_t n = 0;
         for (n = 0; n < avContext->nb_streams; n++)
         {
             Track_t track;
             AVStream *stream = avContext->streams[n];
+            int previous_id = stream->id;
             int32_t version = 0;
             char *encoding = NULL;
-
-            if (bestVideo >= 0 && n != bestVideo && get_codecpar(stream)->codec_type == AVMEDIA_TYPE_VIDEO)
+            if (get_codecpar(stream)->codec_type == AVMEDIA_TYPE_VIDEO &&
+                ((auto_dash && n != dash_video) ||
+                 (g_sel_program_id <= 0 && !video_allowed(stream))))
             {
                 stream->discard = AVDISCARD_ALL;
                 continue;
@@ -3822,10 +4442,14 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                ffmpeg_printf(1, "%d. encoding = %s - version %d\n", n, encoding, version);
             }
 
-            if (!stream->id)
+            /* HLS IDs identify playlists, so embedded audio and video share one. */
+            if (!stream->id || is_hls_input(avContext))
             {
                 stream->id = n;
             }
+            ffmpeg_printf(10, "track identity: context=%u format=%s index=%d previous_id=%d id=%d type=%d\n",
+                          cAVIdx, avContext->iformat ? avContext->iformat->name : "unknown",
+                          stream->index, previous_id, stream->id, get_codecpar(stream)->codec_type);
 
             /* some values in track are unset and therefor copyTrack segfaults.
              * so set it by default to NULL!
@@ -3903,7 +4527,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if(stream->duration == AV_NOPTS_VALUE || 0 == strncmp(avContext->iformat->name, "dash", 4))
                     {
                         ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                        track.duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
+                        track.duration = context_duration_ms(avContext);
                     }
 
                     if (context->manager->video)
@@ -3987,27 +4611,40 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if(stream->duration == AV_NOPTS_VALUE)
                     {
                         ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                        track.duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
+                        track.duration = context_duration_ms(avContext);
                     }
 
-                    if(track.transcode_to_ac3 || track.transcode_to_aaclc || !strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
+                    if(track.transcode_to_ac3 || track.transcode_to_aaclc || pcm_audio_export_enabled || !strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
                     {
                         track.inject_as_pcm = (track.transcode_to_ac3 || track.transcode_to_aaclc) ? 0 : 1;
                         track.avCodecCtx = wrapped_avcodec_get_context(cAVIdx, stream);
+                        if (!track.avCodecCtx && pcm_audio_export_enabled)
+                        {
+                            ffmpeg_err("cannot allocate software audio decoder for PCM export\n");
+                            releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                            return cERR_CONTAINER_FFMPEG_NOMEM;
+                        }
                         if (track.avCodecCtx)
                         {
                             ffmpeg_printf(10, " Handle inject_as_pcm = %d\n", track.inject_as_pcm);
 
                             const AVCodec *codec = avcodec_find_decoder(get_codecpar(stream)->codec_id);
 
-                            int errorCode = avcodec_open2(track.avCodecCtx, codec, NULL);
+                            int errorCode = codec ?
+                                (avcodec_is_open(track.avCodecCtx) ? 0 : avcodec_open2(track.avCodecCtx, codec, NULL)) :
+                                AVERROR_DECODER_NOT_FOUND;
                             if(codec != NULL && !errorCode)
                             {
                                ffmpeg_printf(10, "AVCODEC__INIT__SUCCESS\n");
                             }
                             else
                             {
-                               ffmpeg_printf(10, "AVCODEC__INIT__FAILED error[%d]\n", errorCode);
+                               ffmpeg_err("AVCODEC__INIT__FAILED error[%d]\n", errorCode);
+                               if (pcm_audio_export_enabled)
+                               {
+                                   releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                                   return cERR_CONTAINER_FFMPEG_INIT;
+                               }
                             }
                         }
                     }
@@ -4031,8 +4668,8 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     }
                     else if (get_codecpar(stream)->codec_id == AV_CODEC_ID_AAC)
                     {
-                        if( 0 == strncmp(avContext->iformat->name, "mpegts", 6) ||
-                            0 == strncmp(avContext->iformat->name, "hls,", 4) )
+                        /* HLS can carry raw AAC in fMP4; its writer detects ADTS per packet. */
+                        if( 0 == strncmp(avContext->iformat->name, "mpegts", 6) )
                         {
                             const char marker[] = "ADTS";
                             track.aacbuflen = sizeof(marker)/sizeof(char);
@@ -4271,10 +4908,12 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                 {
                     ffmpeg_printf(10, "subtitle with not supported codec codec_id[%u]\n", (uint32_t)get_codecpar(stream)->codec_id);
                 }
-                else if (initial && context->manager->subtitle)
+                else if (context->manager->subtitle)
                 {
                     AVDictionaryEntry *lang = NULL;
                     memset(&track, 0, sizeof(track));
+                    track.AVIdx = cAVIdx;
+                    track.is_forced = subtitle_is_forced(stream);
 
                     ffmpeg_printf(10, "CODEC_TYPE_SUBTITLE %d\n", get_codecpar(stream)->codec_type);
 
@@ -4290,7 +4929,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if(stream->duration == AV_NOPTS_VALUE)
                     {
                         ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                        track.duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
+                        track.duration = context_duration_ms(avContext);
                     }
 
                     ffmpeg_printf(1, "subtitle codec %d\n", get_codecpar(stream)->codec_id);
@@ -4410,7 +5049,7 @@ static int32_t container_ffmpeg_play(Context_t *context)
 static int32_t container_ffmpeg_stop(Context_t *context)
 {
     int32_t ret = cERR_CONTAINER_FFMPEG_NO_ERROR;
-    int32_t wait_time = 10; // we give 1s to close otherwise we will force close
+    int32_t wait_time = 200; // Allow up to one second for the worker to stop.
 
     ffmpeg_printf(10, "\n");
 
@@ -4428,7 +5067,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
     while ( (hasPlayThreadStarted != 0) && (--wait_time) > 0 )
     {
         ffmpeg_printf(10, "Waiting for ffmpeg thread to terminate itself, will try another %d times\n", wait_time);
-        usleep(100000);
+        usleep(5000);
     }
 
     if (wait_time == 0)
@@ -4447,6 +5086,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
 
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
 
+    pcm_export_close(&pcmExport);
     free_all_stored_avcodec_context();
 
     uint32_t i = 0;
@@ -4490,6 +5130,8 @@ static int32_t container_ffmpeg_stop(Context_t *context)
     }
 
     isContainerRunning = 0;
+    context->playback->isDash = 0;
+    dashAudioResetPending = 0;
     avformat_network_deinit();
     ffmpeg_buf_free();
 
@@ -4524,10 +5166,21 @@ static int32_t container_ffmpeg_seek_bytes(off_t pos)
 
 static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t absolute)
 {
+    int zero_seek = !absolute && sec == 0;
+    int64_t target_us;
     Track_t *videoTrack = NULL;
     Track_t *audioTrack = NULL;
     Track_t *current = NULL;
 
+    if (sec > INT64_MAX / AV_TIME_BASE || sec < INT64_MIN / AV_TIME_BASE)
+    {
+        ffmpeg_err("seek target is out of range\n");
+        return cERR_CONTAINER_FFMPEG_ERR;
+    }
+    target_us = sec * AV_TIME_BASE;
+    /* The playback layer holds isSeeking until the output has been reset. */
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     if (!absolute)
     {
         ffmpeg_printf(10, "seeking %"PRId64" sec\n", sec);
@@ -4538,7 +5191,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
 
         int64_t currPts = -1;
         int ret = context->playback->Command(context, PLAYBACK_PTS, &currPts);
-        if (ret != 0)
+        if (ret != 0 || currPts < 0 || currPts == INVALID_PTS_VALUE)
         {
             ffmpeg_err("fail to get current PTS\n");
             return cERR_CONTAINER_FFMPEG_ERR;
@@ -4561,14 +5214,13 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
             return cERR_CONTAINER_FFMPEG_ERR;
         }
 
-        sec += cur_sec;
+        target_us = av_sat_add64(target_us,
+            av_rescale_q(currPts, (AVRational){1, 90000}, AV_TIME_BASE_Q));
     }
 
-    ffmpeg_printf(10, "goto %"PRId64" sec\n", sec);
-    if (sec < 0)
-    {
-        sec = 0;
-    }
+    ffmpeg_printf(10, "goto %"PRId64" us\n", target_us);
+    if (target_us < 0)
+        target_us = 0;
 
     context->manager->video->Command(context, MANAGER_GET_TRACK, &videoTrack);
     context->manager->audio->Command(context, MANAGER_GET_TRACK, &audioTrack);
@@ -4593,7 +5245,8 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     }
 
     getSeekMutex();
-    g_seek_target_seconds = sec * AV_TIME_BASE;
+    g_zero_seek = zero_seek;
+    g_seek_target_seconds = target_us;
     g_do_seek_target_seconds = true;
     g_stamp = context->playback->stamp;
     releaseSeekMutex();
@@ -4633,7 +5286,7 @@ static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length)
     {
         if (current->duration <= 0)
         {
-            return cERR_CONTAINER_FFMPEG_ERR;
+            return cERR_CONTAINER_FFMPEG_NO_ERROR;
         }
         else
         {
@@ -4644,7 +5297,7 @@ static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length)
     {
         if (avContextTab[0] != NULL)
         {
-            *length = avContextTab[0]->duration / 1000;
+            *length = context_duration_ms(avContextTab[0]) / 1000;
         }
         else
         {
@@ -4658,7 +5311,16 @@ static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length)
 
 static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
 {
+    int64_t sec = 0;
+    int32_t ret;
     ffmpeg_printf(10, "track %d\n", *arg);
+    if (!context->playback->isDash &&
+        (!avContextTab[0] || use_custom_io[0] || avContextTab[0]->duration > 0))
+    {
+        ret = context->playback->Command(context, PLAYBACK_SEEK, &sec);
+        if (ret != 0)
+            return ret;
+    }
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     if (context->manager->audio)
     {
@@ -4679,17 +5341,28 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
             }
         }
     }
+    if (context->playback->isDash)
+        dashAudioResetPending = 1;
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
 
-    /* Hellmaster1024: nothing to do here!*/
-    int64_t sec = 0;
-    context->playback->Command(context, PLAYBACK_SEEK, (void*)&sec);
     return cERR_CONTAINER_FFMPEG_NO_ERROR;
 }
 
 static int32_t container_ffmpeg_switch_subtitle(Context_t *context, int32_t *arg)
 {
     ffmpeg_printf(10, "track %d\n", *arg);
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+    if (context->manager->subtitle)
+    {
+        Track_t *selected = NULL;
+        int i;
+        context->manager->subtitle->Command(context, MANAGER_GET_TRACK, &selected);
+        for (i = 0; i < IPTV_AV_CONTEXT_MAX_NUM; i++)
+            if (avContextTab[i])
+                select_subtitle_stream(avContextTab[i],
+                    selected && selected->AVIdx == i ? selected->Id : -1);
+    }
+    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
 
     /* This is made to flush inside the buffer because
      * subtitles frame was already read and ignored
@@ -4813,7 +5486,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                         if(stream->duration == AV_NOPTS_VALUE || 0 == strncmp(avContext->iformat->name, "dash", 4))
                         {
                             ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                            track->duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
+                            track->duration = context_duration_ms(avContext);
                         }
 
                         ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
@@ -4838,7 +5511,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                         if(stream->duration == AV_NOPTS_VALUE)
                         {
                             ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                            track->duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
+                            track->duration = context_duration_ms(avContext);
                         }
 
                         ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
@@ -4862,7 +5535,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                         if(stream->duration == AV_NOPTS_VALUE)
                         {
                             ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                            track->duration = (AV_NOPTS_VALUE == avContext->duration) ? 0 : (int64_t) avContext->duration / 1000;
+                            track->duration = context_duration_ms(avContext);
                         }
 
                         ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);

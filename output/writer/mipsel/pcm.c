@@ -83,7 +83,8 @@ static int32_t reset()
 {
     initialHeader = 1;
     fixed_bufferfilled = 0;
-    fixed_buffertimestamp = 0;
+    fixed_buffertimestamp = INVALID_PTS_VALUE;
+    fixed_bufferduration = 0;
     return 0;
 }
 

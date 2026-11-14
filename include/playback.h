@@ -6,6 +6,7 @@
 
 typedef void( * PlaybackDieNowCallback )();
 bool PlaybackDieNowRegisterCallback(PlaybackDieNowCallback callback);
+int64_t PlaybackLastContinue(void);
 
 typedef enum {PLAYBACK_OPEN, PLAYBACK_CLOSE, PLAYBACK_PLAY, PLAYBACK_STOP, PLAYBACK_PAUSE, PLAYBACK_CONTINUE, PLAYBACK_FLUSH, PLAYBACK_TERM, PLAYBACK_FASTFORWARD, PLAYBACK_SEEK, PLAYBACK_SEEK_ABS, PLAYBACK_PTS, PLAYBACK_LENGTH, PLAYBACK_SWITCH_AUDIO, PLAYBACK_SWITCH_SUBTITLE, PLAYBACK_INFO, PLAYBACK_SLOWMOTION, PLAYBACK_FASTBACKWARD, PLAYBACK_GET_FRAME_COUNT} PlaybackCmd_t;
 
@@ -22,6 +23,8 @@ typedef struct PlaybackHandler_s
     uint8_t isPaused;
     uint8_t isForwarding;
     uint8_t isSeeking;
+    uint8_t isAudioSwitching;
+    uint8_t isDash;
     uint8_t isCreationPhase;
 
     int32_t BackWard;

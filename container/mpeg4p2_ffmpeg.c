@@ -26,12 +26,12 @@ static Mpeg4P2Context * mpeg4p2_context_open()
 
 static void mpeg4p2_write(Context_t *ctx, Mpeg4P2Context *mpeg4p2_ctx, Track_t *track, int64_t start_time, int64_t *currentVideoPts, int64_t *latestPts, AVPacket *pkt)
 {
-    *currentVideoPts = track->pts = doCalcPts(start_time, mpeg4p2_ctx->ctx->time_base_out, pkt->pts);
+    *currentVideoPts = track->pts = calcConvertedPts(track->stream, mpeg4p2_ctx->ctx->time_base_out, pkt->pts, 0);
     if ((*currentVideoPts > *latestPts) && (*currentVideoPts != INVALID_PTS_VALUE)) {
         *latestPts = *currentVideoPts;
     }
 
-    track->dts = doCalcPts(start_time, mpeg4p2_ctx->ctx->time_base_out, pkt->dts);
+    track->dts = calcConvertedPts(track->stream, mpeg4p2_ctx->ctx->time_base_out, pkt->dts, 1);
 
     AudioVideoOut_t avOut;
     avOut.data       = pkt->data;
@@ -72,6 +72,7 @@ static int mpeg4p2_context_reset(Mpeg4P2Context *context)
 static int mpeg4p2_write_packet(Context_t *ctx, Mpeg4P2Context *mpeg4p2_ctx, Track_t *track, int cAVIdx, int64_t *pts_current, int64_t *pts_latest, AVPacket *pkt)
 {
     int ret = 0;
+    AVStream *stream = track->stream;
     if (mpeg4p2_ctx) {
         // Setup is needed
         if (!mpeg4p2_ctx->ctx) {
@@ -91,6 +92,9 @@ static int mpeg4p2_write_packet(Context_t *ctx, Mpeg4P2Context *mpeg4p2_ctx, Tra
             if (ret == 0) {
                 while ((ret = av_bsf_receive_packet(mpeg4p2_ctx->ctx, pkt)) == 0) {
                     mpeg4p2_write(ctx, mpeg4p2_ctx, track, avContextTab[cAVIdx]->start_time, pts_current, pts_latest, pkt);
+                    ctx->manager->video->Command(ctx, MANAGER_GET_TRACK, &track);
+                    if (!track || track->stream != stream || track->AVIdx != cAVIdx)
+                        return 0;
                 }
 
                 if (ret == AVERROR(EAGAIN)) {
@@ -120,4 +124,3 @@ static void mpeg4p2_context_close(Mpeg4P2Context *context)
         return;
     }
 }
-

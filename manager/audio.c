@@ -23,6 +23,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 #include <libavformat/avformat.h>
 #include "manager.h"
@@ -51,6 +52,7 @@ static const char FILENAME[] = __FILE__;
 static Track_t * Tracks = NULL;
 static int TrackCount = 0;
 static int CurrentTrack = 0; //TRACK[0] as default.
+static pthread_mutex_t track_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -66,7 +68,12 @@ static int ManagerAdd(Context_t  *context, Track_t track) {
 
     if (Tracks == NULL)
     {
-        Tracks = malloc(sizeof(Track_t) * TRACKWRAP);
+        Tracks = calloc(TRACKWRAP, sizeof(Track_t));
+        if (!Tracks)
+        {
+            audio_mgr_err("allocating tracks failed\n");
+            return cERR_AUDIO_MGR_ERROR;
+        }
         int i;
         for (i = 0; i < TRACKWRAP; i++)
         {
@@ -85,6 +92,12 @@ static int ManagerAdd(Context_t  *context, Track_t track) {
     {
         if (Tracks[i].Id == track.Id)
         {
+            /* a software decoded / transcoded track keeps the channel count
+             * of the decoded frames, the probe value can be outdated */
+            int live_channels = Tracks[i].avCodecCtx ? Tracks[i].channels : 0;
+            replaceTrack(&Tracks[i], &track);
+            if (live_channels > 0)
+                Tracks[i].channels = live_channels;
             Tracks[i].pending = 0;
             return cERR_AUDIO_MGR_NO_ERROR;
         }
@@ -205,6 +218,10 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
 
     audio_mgr_printf(10, "%s::%s\n", FILENAME, __FUNCTION__);
 
+    /* Container refresh acquires the container lock before manager locks. */
+    if (command == MANAGER_LIST)
+        container_ffmpeg_update_tracks(context, context->playback->uri, 0);
+    pthread_mutex_lock(&track_mutex);
     switch(command)
     {
     case MANAGER_ADD:
@@ -215,7 +232,6 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
     }
     case MANAGER_LIST:
     {
-        container_ffmpeg_update_tracks(context, context->playback->uri, 0);
         *((TrackDescription_t **)argument) = ManagerList(context);
         break;
     }
@@ -346,6 +362,7 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
 
     audio_mgr_printf(10, "%s:%s: returning %d\n", FILENAME, __FUNCTION__,ret);
 
+    pthread_mutex_unlock(&track_mutex);
     return ret;
 }
 

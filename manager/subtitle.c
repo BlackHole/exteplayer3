@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <pthread.h>
 
 #include "manager.h"
 #include "common.h"
@@ -52,6 +53,7 @@ static Track_t * Tracks = NULL;
 static int TrackSlotCount = 0;
 static int TrackCount = 0;
 static int CurrentTrack = -1; //no as default.
+static pthread_mutex_t track_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -97,6 +99,7 @@ static int ManagerAdd(Context_t *context, Track_t track)
     {
         if (Tracks[i].Id == track.Id)
         {
+            replaceTrack(&Tracks[i], &track);
             Tracks[i].pending = 0;
             return cERR_SUBTITLE_MGR_NO_ERROR;
         }
@@ -149,6 +152,7 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
             tracklist[j].Id = Tracks[i].Id;
             tracklist[j].Name = strdup(Tracks[i].Name);
             tracklist[j].Encoding = strdup(Tracks[i].Encoding);
+            tracklist[j].is_forced = Tracks[i].is_forced;
             ++j;
         }
         tracklist[j].Id = -1;
@@ -194,6 +198,9 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
 
     subtitle_mgr_printf(50, "%s::%s %d\n", FILENAME, __FUNCTION__, command);
 
+    if (command == MANAGER_LIST)
+        container_ffmpeg_update_tracks(context, context->playback->uri, 0);
+    pthread_mutex_lock(&track_mutex);
     switch(command)
     {
     case MANAGER_ADD:
@@ -204,7 +211,6 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
     }
     case MANAGER_LIST:
     {
-        container_ffmpeg_update_tracks(context, context->playback->uri, 0);
         *((char***)argument) = (char **)ManagerList(context);
         break;
     }
@@ -220,6 +226,12 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
         }
         break;
     }
+    case MANAGER_REF_LIST:
+        *((Track_t **)argument) = Tracks;
+        break;
+    case MANAGER_REF_LIST_SIZE:
+        *((int *)argument) = TrackCount;
+        break;
     case MANAGER_GET_TRACK_DESC:
     {
         if ((TrackCount > 0) && (CurrentTrack >=0))
@@ -232,6 +244,7 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
                 track->Id       = Tracks[CurrentTrack].Id;
                 track->Name     = strdup(Tracks[CurrentTrack].Name);
                 track->Encoding = strdup(Tracks[CurrentTrack].Encoding);
+                track->is_forced = Tracks[CurrentTrack].is_forced;
             }
         }
         else
@@ -333,6 +346,8 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
     }
 
     subtitle_mgr_printf(50, "%s:%s: returning %d\n", FILENAME, __FUNCTION__,ret);
+
+    pthread_mutex_unlock(&track_mutex);
     return ret;
 }
 

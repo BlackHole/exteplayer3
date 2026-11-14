@@ -1,5 +1,5 @@
 AC_PREREQ([2.69])
-AC_INIT([exteplayer3], [181], [oe-alliance])
+AC_INIT([exteplayer3], [185], [oe-alliance])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIR([m4])
 
