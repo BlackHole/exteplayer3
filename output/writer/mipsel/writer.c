@@ -26,6 +26,7 @@
 #include <string.h>
 #include <errno.h>
 #include <pthread.h>
+#include <limits.h>
 
 #include "misc.h"
 #include "writer.h"
@@ -96,7 +97,7 @@ static Writer_t * AvailableWriter[] = {
 /* ***************************** */
 /*  Functions                    */
 /* ***************************** */
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size)
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size, int is_video)
 {
     fd_set rfds;
     fd_set wfds;
@@ -106,7 +107,8 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
     int maxFd = pipefd > fd ? pipefd : fd;
     struct timeval tv;
 
-    while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking)
+    while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking &&
+          (is_video || !context->playback->isAudioSwitching))
     {
         FD_ZERO(&rfds);
         FD_ZERO(&wfds);
@@ -232,15 +234,58 @@ ssize_t write_with_retry(int fd, const void *buf, int size)
 ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic)
 {
     ssize_t len = 0;
-    int i = 0;
-    for(i=0; i<ic; ++i)
+    int index = 0;
+    size_t offset = 0;
+    if (ic < 0 || (ic && !iov))
     {
-        write_with_retry(fd, iov[i].iov_base, iov[i].iov_len);
-        len += iov[i].iov_len;
-        if(PlaybackDieNow(0))
+        errno = EINVAL;
+        writer_err("invalid scatter/gather vector\n");
+        return -1;
+    }
+    while (index < ic)
+    {
+        struct iovec batch[64];
+        int n, count = ic - index < 64 ? ic - index : 64;
+        ssize_t written;
+        if (PlaybackDieNow(0))
         {
+            errno = ECANCELED;
             return -1;
         }
+        for (n = 0; n < count; n++)
+            batch[n] = iov[index + n];
+        batch[0].iov_base = (char *)batch[0].iov_base + offset;
+        batch[0].iov_len -= offset;
+        written = writev(fd, batch, count);
+        if (written < 0)
+        {
+            if (errno == EINTR || errno == EAGAIN)
+            {
+                usleep(1000);
+                continue;
+            }
+            writer_err("writev failed: %s\n", strerror(errno));
+            return -1;
+        }
+        if (!written)
+        {
+            usleep(1000);
+            continue;
+        }
+        if (written > SSIZE_MAX - len)
+        {
+            errno = EOVERFLOW;
+            writer_err("scatter/gather byte count overflow\n");
+            return -1;
+        }
+        len += written;
+        while (index < ic && (size_t)written >= iov[index].iov_len - offset)
+        {
+            written -= iov[index].iov_len - offset;
+            offset = 0;
+            index++;
+        }
+        offset += written;
     }
     return len;
 }
@@ -298,4 +343,3 @@ Writer_t* getDefaultAudioWriter()
 
     return NULL;
 }
-

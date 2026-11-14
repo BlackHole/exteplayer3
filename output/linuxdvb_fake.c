@@ -53,8 +53,14 @@
 #define cERR_LINUXDVB_NO_ERROR      0
 #define cERR_LINUXDVB_ERROR        -1
 
-static const char VIDEODEV[] = "/tmp/e2i_video0";
-static const char AUDIODEV[] = "/tmp/e2i_audio0";
+#ifndef EXTEPLAYER_FAKE_VIDEO
+#define EXTEPLAYER_FAKE_VIDEO "/tmp/e2i_video0"
+#endif
+#ifndef EXTEPLAYER_FAKE_AUDIO
+#define EXTEPLAYER_FAKE_AUDIO "/tmp/e2i_audio0"
+#endif
+static const char VIDEODEV[] = EXTEPLAYER_FAKE_VIDEO;
+static const char AUDIODEV[] = EXTEPLAYER_FAKE_AUDIO;
 
 static int videofd 	= -1;
 static int audiofd 	= -1;
@@ -106,12 +112,22 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
 
     if (video && videofd < 0)
     {
-        videofd = open(VIDEODEV, O_CREAT | O_TRUNC | O_WRONLY | S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, 0666);
+        videofd = open(VIDEODEV, O_CREAT | O_TRUNC | O_WRONLY | O_NONBLOCK, 0666);
+        if (videofd < 0)
+        {
+            linuxdvb_err("opening fake video output: %s\n", strerror(errno));
+            return cERR_LINUXDVB_ERROR;
+        }
     }
 
     if (audio && audiofd < 0)
     {
-        audiofd = open(AUDIODEV, O_CREAT | O_TRUNC | O_WRONLY | S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, 0666);
+        audiofd = open(AUDIODEV, O_CREAT | O_TRUNC | O_WRONLY | O_NONBLOCK, 0666);
+        if (audiofd < 0)
+        {
+            linuxdvb_err("opening fake audio output: %s\n", strerror(errno));
+            return cERR_LINUXDVB_ERROR;
+        }
     }
 
     return 0;

@@ -53,6 +53,7 @@ exteplayer3_SOURCES = \
     output/writer/mipsel/vc1.c \
     playback/playback.c \
     tools/debug.c \
+    tools/pcm_export.c \
     tools/strbuffer.c \
     external/ffmpeg/src/bitstream.c \
     external/ffmpeg/src/latmenc.c \
