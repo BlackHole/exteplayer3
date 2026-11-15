@@ -159,14 +159,17 @@ static int writeData(void* _call)
         memcpy(PesHeader + iov[0].iov_len, Vc1FrameStartCode, sizeof(Vc1FrameStartCode) );
         iov[0].iov_len += sizeof(Vc1FrameStartCode);
     }
+    
+    /* iov can point into videocodecdata.data */
+    int ret = call->WriteV(call->fd, iov, ic);
 
     if(videocodecdata.data)
     {
         free(videocodecdata.data);
         videocodecdata.data = NULL;
     }
-
-    return call->WriteV(call->fd, iov, ic);
+    
+    return ret;
 }
 
 /* ***************************** */

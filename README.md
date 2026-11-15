@@ -11,6 +11,17 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
 [![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=oe-alliance_exteplayer3&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=oe-alliance_exteplayer3)
 [![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=oe-alliance_exteplayer3&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=oe-alliance_exteplayer3)
 
+## Version 186
+
+Integrated from [skyjet18/exteplayer3](https://github.com/skyjet18/exteplayer3/tree/13c7679) (v185 to v186): bug fixes in
+the container, PTS clock, subtitles, buffering, progressive playback and the H.264, H.265, VP9,
+VC-1/WMV, AAC, PCM and Vorbis writers, JSON escaping of track names and subtitles, xHE-AAC
+software decoding and full HLS probing over the network.
+
+A new resampler is set up when decoded audio changes its channels, sample rate or format (5.1 to
+stereo at a programme change). In OpenBH this also covers the DTS/TrueHD to AC3/E-AC3 and HE-AAC
+to AAC-LC transcoders, which otherwise stopped (or crashed) at such a change.
+
 ## Version 185
 
 Integrated from [skyjet18/exteplayer3](https://github.com/skyjet18/exteplayer3/tree/3e87bef42b8d233ae11d0527548308b84a6d2a2b), retaining the OE Alliance Autotools build and the OpenBH audio codec, audio channel,
