@@ -86,6 +86,15 @@ bool isBufferedOutput = false;
  * packet, 2 = packet written. */
 #define EAC3_RESTART_DELAY_MS 100
 static volatile int eac3Restart = 0;
+/* The audio bypass mode currently configured in the driver, and whether the
+ * DD+ passthrough start has already had its one un-sticking restart. Together
+ * they let a later DD+ -> DD+ track switch (native Atmos <-> transcoded
+ * TrueHD, both AUDIOTYPE_AC3_PLUS) keep the decoder running instead of
+ * re-setting the bypass mode, which reconfigures the HDMI output and silences
+ * the Vu+ Ultimo 4K / Duo 4K SE. The servicemp3 sink-bin fix avoids the same
+ * fault by dropping the redundant E-AC3 caps event. */
+static int currentAudioBypass = -1;
+static int eac3Settled = 0;
 static struct timespec eac3PlayTime;
 
 pthread_mutex_t LinuxDVBmutex;
@@ -477,6 +486,8 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
                 linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
                 ret = cERR_LINUXDVB_ERROR;
             }
+            else
+                currentAudioBypass = writer->caps->dvbStreamType;
         }
 
         if (context->playback->isDash)
@@ -497,6 +508,7 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             timing_after_switch = 1;
         }
         eac3Restart = 0;
+        eac3Settled = 0;
         if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType && LinuxDvbEac3NeedsRestart())
         {
             linuxdvb_printf(10, "DD+ passthrough start, audio restart armed\n");
@@ -562,6 +574,8 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
         }
         ioctl(audiofd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
         eac3Restart = 0;
+        eac3Settled = 0;
+        currentAudioBypass = -1;
     }
 
     releaseLinuxDVBMutex();
@@ -858,6 +872,28 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
 
                 writer = getWriter(Encoding);
 
+                /* Once DD+ passthrough is up and has had its un-sticking
+                 * restart, a later DD+ -> DD+ track switch (native Atmos <->
+                 * transcoded TrueHD) must NOT stop the decoder and re-set the
+                 * bypass mode: that reconfigures the HDMI output and leaves the
+                 * Vu+ Ultimo 4K / Duo 4K SE silent. The decoder is already in
+                 * DD+ mode, so just flush the old track and keep it running -
+                 * the servicemp3 sink-bin fix avoids the same fault. The first
+                 * switch after a DD+ start (eac3Settled == 0) still takes the
+                 * full restart below, which is what un-sticks that first start. */
+                if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
+                    AUDIOTYPE_AC3_PLUS == currentAudioBypass && eac3Settled &&
+                    LinuxDvbEac3NeedsRestart())
+                {
+                    linuxdvb_printf(10, "DD+ -> DD+ switch: flush only, decoder kept running\n");
+                    if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
+                        linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+                    if (context->playback->isDash && writer->reset)
+                        writer->reset();
+                    eac3Restart = 0;
+                    goto audio_switch_done;
+                }
+
                 /* a switch is the restart the DD+ start was waiting for */
                 eac3Restart = 0;
 
@@ -906,6 +942,12 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                         linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
                         if (context->playback->isDash)
                             goto audio_switch_done;
+                    }
+                    else
+                    {
+                        currentAudioBypass = writer->caps->dvbStreamType;
+                        if (AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
+                            eac3Settled = 1;
                     }
                 }
 
