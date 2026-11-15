@@ -846,7 +846,33 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
         /* No kernel AC-4 writer — always software decode via librempeg. */
         return "A_IPCM";
     case AV_CODEC_ID_DTS:
-        return (dts_software_decode) ? "A_IPCM" : "A_DTS";
+        if (dts_software_decode)
+            return "A_IPCM";
+        /* streams that carry a DTS-HD EXSS extension (DTS-HD MA, DTS:X,
+         * DTS-HD HRA, DTS Express) pass through in the driver's DTS-HD mode;
+         * DTS-ES and DTS 96/24 are core extensions and stay plain DTS. */
+        switch (profile)
+        {
+#ifdef FF_PROFILE_DTS_HD_MA
+        case FF_PROFILE_DTS_HD_MA:
+#endif
+#ifdef FF_PROFILE_DTS_HD_MA_X
+        case FF_PROFILE_DTS_HD_MA_X:
+#endif
+#ifdef FF_PROFILE_DTS_HD_MA_X_IMAX
+        case FF_PROFILE_DTS_HD_MA_X_IMAX:
+#endif
+#ifdef FF_PROFILE_DTS_HD_HRA
+        case FF_PROFILE_DTS_HD_HRA:
+#endif
+#ifdef FF_PROFILE_DTS_EXPRESS
+        case FF_PROFILE_DTS_EXPRESS:
+#endif
+            return "A_DTS_HD";
+        default:
+            break;
+        }
+        return "A_DTS";
     case AV_CODEC_ID_WMAV1:
         return "A_IPCM";
     case AV_CODEC_ID_WMAV2:

@@ -65,6 +65,7 @@ static Writer_t * AvailableWriter[] = {
     &WriterAudioIPCM,
     &WriterAudioLPCM,
     &WriterAudioDTS,
+    &WriterAudioDTSHD,
     &WriterAudioWMA,
     &WriterAudioWMAPRO,
     &WriterAudioOPUS,

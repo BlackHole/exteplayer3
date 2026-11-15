@@ -54,6 +54,7 @@ extern Writer_t WriterAudioAAC;
 extern Writer_t WriterAudioAACLATM;
 extern Writer_t WriterAudioAACPLUS;
 extern Writer_t WriterAudioDTS;
+extern Writer_t WriterAudioDTSHD;
 extern Writer_t WriterAudioWMA;
 extern Writer_t WriterAudioWMAPRO;
 extern Writer_t WriterAudioFLAC;

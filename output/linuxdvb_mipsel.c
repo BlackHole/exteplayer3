@@ -209,6 +209,22 @@ int LinuxDvbEac3RestartState(void)
     return __sync_bool_compare_and_swap(&eac3Restart, 2, 0) ? 2 : 0;
 }
 
+/* The DTS-HD bypass mode (AUDIOTYPE_DTS_HD) is only usable on drivers that
+ * have it: those with /proc/stb/audio/dtshd, and the Vu+ Ultimo 4K / Duo 4K SE
+ * whose dvb-bcm7444.ko is patched for it. Everywhere else fall back to plain
+ * DTS so a DTS-HD stream still plays as its core instead of going silent. */
+static bool LinuxDvbDtsHdUsable(void)
+{
+    char model[32] = "";
+    if (access("/proc/stb/audio/dtshd", F_OK) == 0)
+        return true;
+    if (STB_VUPLUS == GetSTBType() &&
+        LinuxDvbReadProc("/proc/stb/info/vumodel", model, sizeof(model)) &&
+        (!strncmp(model, "ultimo4k", 8) || !strncmp(model, "duo4kse", 7)))
+        return true;
+    return false;
+}
+
 static int LinuxDvbMapBypassMode(int bypass, bool primary)
 {
     if (STB_DREAMBOX == GetSTBType()) {
@@ -216,6 +232,10 @@ static int LinuxDvbMapBypassMode(int bypass, bool primary)
     }
 
     switch(bypass) {
+        case AUDIOTYPE_DTS_HD:
+            if (!LinuxDvbDtsHdUsable())
+                bypass = AUDIOTYPE_DTS;   /* plain DTS: core only */
+            break;                        /* else leave as the DTS-HD mode */
         case AUDIOTYPE_RAW:
             bypass = primary ? 0x30 : 0xf;
             break;
