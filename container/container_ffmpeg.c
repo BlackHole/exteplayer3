@@ -59,6 +59,7 @@
 #include <libavcodec/bsf.h>
 #include <libavcodec/avcodec.h>
 //#endif
+#include "ffmpeg_profile_compat.h"
 
 #include <ffmpeg/mpeg4audio.h>
 
