@@ -6,6 +6,17 @@
 #include <stdint.h>
 #include "common.h"
 
+/* marks an intended fall-through to the next case label; compilers
+ * without the attribute (GCC before 7) get an empty statement */
+#if defined(__has_attribute)
+#if __has_attribute(fallthrough)
+#define FALLTHROUGH __attribute__((fallthrough))
+#endif
+#endif
+#ifndef FALLTHROUGH
+#define FALLTHROUGH do {} while (0)
+#endif
+
 typedef enum { eNone, eAudio, eVideo} eWriterType_t;
 typedef ssize_t (* WriteV_t) (int, const struct iovec *, int);
 
@@ -54,7 +65,6 @@ extern Writer_t WriterAudioAAC;
 extern Writer_t WriterAudioAACLATM;
 extern Writer_t WriterAudioAACPLUS;
 extern Writer_t WriterAudioDTS;
-extern Writer_t WriterAudioDTSHD;
 extern Writer_t WriterAudioWMA;
 extern Writer_t WriterAudioWMAPRO;
 extern Writer_t WriterAudioFLAC;
@@ -84,16 +94,30 @@ extern Writer_t WriterFramebuffer;
 extern Writer_t WriterPipe;
 extern Writer_t WriterVideoRV30;
 extern Writer_t WriterVideoRV40;
+#ifdef HAVE_DREAMNEXTGEN
+extern Writer_t WriterVideoAVS;
+#endif
 extern Writer_t WriterVideoAVS2;
 
 Writer_t* getWriter(char* encoding);
 
 Writer_t* getDefaultVideoWriter();
 Writer_t* getDefaultAudioWriter();
-ssize_t write_with_retry(int fd, const void *buf, int size);
 ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic);
+/* ends a wait of writev_with_retry() for room in the device */
+void WriterWakeUp(void);
 
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size, int is_video);
+/* The caller of WriteWithRetry() says through it whether its data is still
+ * wanted: wanted(arg, 0) before each wait for the device, wanted(arg, 1)
+ * right before each write(). When that returns 1, done(arg) follows the
+ * write(). WriteWithRetry() gives up (returns 0) when wanted() returns 0. */
+typedef struct WriteGuard_s {
+    int (*wanted)(void *arg, int writing);
+    void (*done)(void *arg);
+    void *arg;
+} WriteGuard_t;
+
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, const WriteGuard_t *guard, const void *buf, int size, int is_video);
 void FlushPipe(int pipefd);
 
 ssize_t WriteExt(WriteV_t _call, int fd, void *data, size_t size);
@@ -108,7 +132,8 @@ typedef enum {
     SUBTITLE_CODEC_ID_PGS,
     SUBTITLE_CODEC_ID_DVB,
     SUBTITLE_CODEC_ID_XSUB,
-    SUBTITLE_CODEC_ID_MOV_TEXT
+    SUBTITLE_CODEC_ID_MOV_TEXT,
+    SUBTITLE_CODEC_ID_EIA608
 } SubtitleCodecId_t;
 
 typedef struct {
@@ -121,10 +146,13 @@ typedef struct {
     uint8_t           *private_data;
     uint32_t          private_size;
 
-    int64_t           durationMS; // duration in miliseconds
+    int64_t           durationMS; // duration in milliseconds
 
     uint32_t         width;
     uint32_t         height;
+
+    /* not 0: only rectangles with the forced flag are sent */
+    int              forcedOnly;
 } WriterSubCallData_t;
 
 typedef struct SubWriter_s {

@@ -30,7 +30,7 @@
 #include "debug.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define TRACKWRAP 4
 /* Error Constants */
@@ -44,7 +44,7 @@ static const char FILENAME[] = __FILE__;
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static Track_t *Tracks = NULL;
 static int TrackCount = 0;
@@ -64,7 +64,7 @@ static void (* updatedTrackInfoFnc)(void) = NULL;
 static int ManagerAdd(Context_t  *context, Track_t track) {
     video_mgr_printf(10, "\n");
 
-    if (Tracks == NULL)
+    if (Tracks == NULL) 
     {
         Tracks = calloc(TRACKWRAP, sizeof(Track_t));
         if (!Tracks)
@@ -86,9 +86,9 @@ static int ManagerAdd(Context_t  *context, Track_t track) {
     }
 
     int i;
-    for (i = 0; i < TRACKWRAP; i++)
+    for (i = 0; i < TRACKWRAP; i++) 
     {
-        if (Tracks[i].Id == track.Id)
+        if (Tracks[i].Id == track.Id) 
         {
             replaceTrack(&Tracks[i], &track);
             Tracks[i].pending = 0;
@@ -100,8 +100,8 @@ static int ManagerAdd(Context_t  *context, Track_t track) {
     {
         copyTrack(&Tracks[TrackCount], &track);
         TrackCount++;
-    }
-    else
+    } 
+    else 
     {
         video_mgr_err("TrackCount out if range %d - %d\n", TrackCount, TRACKWRAP);
         return cERR_VIDEO_MGR_ERROR;
@@ -122,7 +122,7 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
     TrackDescription_t *tracklist = NULL;
 
     video_mgr_printf(10, "%s::%s\n", FILENAME, __FUNCTION__);
-    if (Tracks != NULL)
+    if (Tracks != NULL) 
     {
         tracklist = malloc(sizeof(TrackDescription_t) *((TrackCount) + 1));
         if (tracklist == NULL)
@@ -142,6 +142,8 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
             tracklist[j].Id = Tracks[i].Id;
             tracklist[j].Name = strdup(Tracks[i].Name);
             tracklist[j].Encoding = strdup(Tracks[i].Encoding);
+            tracklist[j].Title = NULL;
+            tracklist[j].video_info = Tracks[i].video_info;
             ++j;
         }
         tracklist[j].Id = -1;
@@ -157,15 +159,15 @@ static int ManagerDel(Context_t * context)
 
     video_mgr_printf(10, "\n");
 
-    if(Tracks != NULL)
+    if(Tracks != NULL) 
     {
-        for (i = 0; i < TrackCount; i++)
+        for (i = 0; i < TrackCount; i++) 
         {
             freeTrack(&Tracks[i]);
         }
         free(Tracks);
         Tracks = NULL;
-    }
+    } 
     else
     {
         video_mgr_err("nothing to delete!\n");
@@ -197,12 +199,12 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
         ret = ManagerAdd(context, *track);
         break;
     }
-    case MANAGER_LIST:
+    case MANAGER_LIST: 
     {
         *((char***)argument) = (char **)ManagerList(context);
         break;
     }
-    case MANAGER_GET:
+    case MANAGER_GET: 
     {
         if ((TrackCount > 0) && (CurrentTrack >=0))
         {
@@ -214,7 +216,7 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
         }
         break;
     }
-    case MANAGER_GET_TRACK_DESC:
+    case MANAGER_GET_TRACK_DESC: 
     {
         if ((TrackCount > 0) && (CurrentTrack >=0))
         {
@@ -231,8 +233,11 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
                 track->height               = Tracks[CurrentTrack].height;
                 track->aspect_ratio_num     = Tracks[CurrentTrack].aspect_ratio_num;
                 track->aspect_ratio_den     = Tracks[CurrentTrack].aspect_ratio_den;
+                track->video_info           = Tracks[CurrentTrack].video_info;
                 pthread_mutex_unlock(&track_mutex);
                 context->output->video->Command(context, OUTPUT_GET_PROGRESSIVE, &(track->progressive));
+                /* a picture size FFmpeg does not know is taken from the video decoder */
+                context->output->video->Command(context, OUTPUT_GET_VIDEO_INFO, track);
                 return ret;
             }
         }
@@ -242,7 +247,7 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
         }
     break;
     }
-    case MANAGER_GET_TRACK:
+    case MANAGER_GET_TRACK: 
     {
         video_mgr_printf(20, "MANAGER_GET_TRACK\n");
 

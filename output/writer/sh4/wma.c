@@ -48,7 +48,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -56,7 +56,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static int initialHeader = 1;
@@ -89,9 +89,9 @@ static int writeData(void* _call)
         return 0;
     }
 
-    wma_printf(10, "AudioPts %lld\n", call->Pts);
+    wma_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         wma_err("parsing NULL Data. ignoring...\n");
         return 0;
@@ -108,12 +108,12 @@ static int writeData(void* _call)
 
         unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
 
-        if ((call->private_size <= 0) || (call->private_data == NULL))
+        if ((call->private_size == 0) || (call->private_data == NULL))
         {
             wma_err("private NULL.\n");
             return -1;
         }
-
+        
         struct iovec iov[2];
         iov[0].iov_base = PesHeader;
         iov[0].iov_len = InsertPesHeader (PesHeader, call->private_size, MPEG_AUDIO_PES_START_CODE, 0, 0);

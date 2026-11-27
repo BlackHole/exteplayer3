@@ -69,18 +69,6 @@ int strbuffer_free2( strbuffer_t *buffer )
 }
 
 
-int strbuffer_clear( strbuffer_t *buffer )
-{
-	if( !buffer )
-	{
-		return -1;
-	}
-
-	buffer->pos = buffer->buffer;
-
-	return 0;
-}
-
 int strbuffer_add( strbuffer_t *buffer, const char *str )
 {
 	if( !buffer || !str )
@@ -102,18 +90,23 @@ int strbuffer_add_len( strbuffer_t *buffer, const char *str, size_t str_len )
 	if( !buffer->buffer || (buffer->end - buffer->pos) <= str_len )
 	{
 		size_t used = (buffer->pos) - (buffer->buffer);
+		size_t size = buffer->size;
+		char *grown;
 
 		do
 		{
-			buffer->size += buffer->init_size;
+			size += buffer->init_size;
 		}
-		while( (buffer->size - used) <= str_len );
+		while( (size - used) <= str_len );
 
 
-		if( (buffer->buffer = realloc( buffer->buffer, buffer->size )) == NULL )
+		/* on failure the buffer stays as it was */
+		if( (grown = realloc( buffer->buffer, size )) == NULL )
 		{
 			return( -1 );
 		}
+		buffer->buffer = grown;
+		buffer->size = size;
 		buffer->pos = buffer->buffer + used;
 		buffer->end = buffer->buffer + buffer->size;
 	}

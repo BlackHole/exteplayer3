@@ -22,10 +22,6 @@
 /* Includes                      */
 /* ***************************** */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include <stdio.h>
 #include <string.h>
 #include "debug.h"
@@ -33,7 +29,7 @@
 #include "output.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* Error Constants */
@@ -47,12 +43,11 @@ static const char* FILENAME = "output.c";
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static Output_t * AvailableOutput[] = {
 #ifdef HAVE_DREAMNEXTGEN
-    &DreamAudioOutput,
     &DreamVideoOutput,
 #endif
     &LinuxDvbOutput,
@@ -101,17 +96,17 @@ static void OutputAdd(Context_t  *context, char *port)
         {
             if (!strcmp(AvailableOutput[i]->Capabilities[j], port))
             {
-                if (!strcmp("audio", port))
+                if (!strcmp("audio", port)) 
                 {
                     context->output->audio = AvailableOutput[i];
                     return;
                 }
-                else if (!strcmp("video", port))
+                else if (!strcmp("video", port)) 
                 {
                     context->output->video = AvailableOutput[i];
                     return;
                 }
-                else if (!strcmp("subtitle", port))
+                else if (!strcmp("subtitle", port)) 
                 {
                     context->output->subtitle = AvailableOutput[i];
                     return;
@@ -164,7 +159,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->subtitle->Command(context, OUTPUT_OPEN, "subtitle");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -187,7 +182,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->subtitle->Command(context, OUTPUT_CLOSE, "subtitle");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -209,7 +204,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
         printOutputCapabilities();
         break;
     }
-    case OUTPUT_PLAY:
+    case OUTPUT_PLAY: 
     { // 4
         if (context && context->playback )
         {
@@ -218,30 +213,30 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
                 ret = context->output->video->Command(context, OUTPUT_PLAY, "video");
             }
             // success or not executed, dunn care
-            if (!ret)
+            if (!ret) 
             {
                 if (context->playback->isAudio)
                 {
                     ret = context->output->audio->Command(context, OUTPUT_PLAY, "audio");
                 }
             }
-            if (!ret)
+            if (!ret) 
             {
                 if (context->playback->isSubtitle)
                 {
                     ret = context->output->subtitle->Command(context, OUTPUT_PLAY, "subtitle");
                 }
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
         }
         break;
     }
-    case OUTPUT_STOP:
+    case OUTPUT_STOP: 
     {
-        if (context && context->playback )
+        if (context && context->playback ) 
         {
             if (context->playback->isVideo)
             {
@@ -255,7 +250,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->subtitle->Command(context, OUTPUT_STOP, "subtitle");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -278,7 +273,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->subtitle->Command(context, OUTPUT_FLUSH, "subtitle");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -320,7 +315,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->audio->Command(context, OUTPUT_FASTFORWARD, "audio");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -339,7 +334,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->audio->Command(context, OUTPUT_REVERSE, "audio");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -362,7 +357,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->subtitle->Command(context, OUTPUT_CONTINUE, "subtitle");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -377,7 +372,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->audio->Command(context, OUTPUT_AVSYNC, "audio");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -400,7 +395,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->subtitle->Command(context, OUTPUT_CLEAR, "subtitle");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -419,7 +414,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 return context->output->audio->Command(context, OUTPUT_PTS, argument);
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -442,7 +437,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 return context->output->subtitle->Command(context, OUTPUT_SWITCH, "subtitle");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -461,7 +456,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
             {
                 ret |= context->output->audio->Command(context, OUTPUT_SLOWMOTION, "audio");
             }
-        }
+        } 
         else
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
@@ -568,6 +563,17 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
         {
             ret = cERR_OUTPUT_INTERNAL_ERROR;
         }
+        break;
+    }
+    case OUTPUT_AUDIO_CHANNEL:
+    {
+        /* also before the playback starts: the output keeps it for the
+         * decoder start */
+        if (context && context->output && context->output->audio)
+        {
+            return context->output->audio->Command(context, OUTPUT_AUDIO_CHANNEL, argument);
+        }
+        ret = cERR_OUTPUT_INTERNAL_ERROR;
         break;
     }
     default:

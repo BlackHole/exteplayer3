@@ -9,8 +9,8 @@
 #include "playback.h"
 #include <pthread.h>
 
-typedef struct PlayFiles_t
-{
+typedef struct PlayFiles_t 
+{ 
     char *szFirstFile;
     char *szSecondFile;
     char *szFirstMoovAtomFile;
@@ -21,7 +21,7 @@ typedef struct PlayFiles_t
     uint64_t iSecondMoovAtomOffset;
 } PlayFiles_t;
 
-typedef struct Context_s
+typedef struct Context_s 
 {
     PlaybackHandler_t	*playback;
     ContainerHandler_t	*container;
@@ -30,13 +30,13 @@ typedef struct Context_s
 } Context_t;
 
 int container_ffmpeg_update_tracks(Context_t *context, char *filename, int initial);
-int32_t container_ffmpeg_get_hevc_hdr_type(void);
+int32_t container_ffmpeg_get_hdr_type(void);
 
 const char* GetGraphicSubPath();
 int32_t GetGraphicWindowWidth();
 int32_t GetGraphicWindowHeight();
 
-void E2iSendMsg(const char * format, ...);
+void E2iSendMsg(const char * format, ...) __attribute__((format(printf, 1, 2)));
 void E2iStartMsg(void);
 void E2iEndMsg(void);
 

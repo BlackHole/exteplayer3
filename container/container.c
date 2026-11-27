@@ -30,7 +30,7 @@ static Container_t * AvailableContainer[] = {
     NULL
 };
 
-static void printContainerCapabilities()
+static void printContainerCapabilities() 
 {
     int32_t i = 0;
     int32_t j = 0;
@@ -48,7 +48,7 @@ static void printContainerCapabilities()
     container_printf(10, "\n");
 }
 
-static int32_t selectContainer(Context_t  *context, char *extension)
+static int32_t selectContainer(Context_t  *context, char *extension) 
 {
     int32_t i = 0;
     int32_t j = 0;
@@ -60,7 +60,7 @@ static int32_t selectContainer(Context_t  *context, char *extension)
     {
         for (j = 0; AvailableContainer[i]->Capabilities[j] != NULL; j++)
         {
-            if (!strcasecmp(AvailableContainer[i]->Capabilities[j], extension))
+            if (!strcasecmp(AvailableContainer[i]->Capabilities[j], extension)) 
             {
                 context->container->selectedContainer = AvailableContainer[i];
 
@@ -69,14 +69,14 @@ static int32_t selectContainer(Context_t  *context, char *extension)
                 break;
             }
         }
-
+        
         if (ret == 0)
         {
             break;
         }
     }
 
-    if (ret != 0)
+    if (ret != 0) 
     {
         container_err("No Container found :-(\n");
     }
@@ -85,26 +85,26 @@ static int32_t selectContainer(Context_t  *context, char *extension)
 }
 
 
-static int Command(void  *_context, ContainerCmd_t command, void * argument)
+static int Command(void  *_context, ContainerCmd_t command, void * argument) 
 {
     Context_t* context = (Context_t*) _context;
     int ret = 0;
 
     container_printf(10, "%s::%s\n", __FILE__, __FUNCTION__);
 
-    switch(command)
+    switch(command) 
     {
-    case CONTAINER_ADD:
+    case CONTAINER_ADD: 
     {
         ret = selectContainer(context, (char*) argument);
         break;
     }
-    case CONTAINER_CAPABILITIES:
+    case CONTAINER_CAPABILITIES: 
     {
         printContainerCapabilities();
         break;
     }
-    case CONTAINER_DEL:
+    case CONTAINER_DEL: 
     {
         context->container->selectedContainer = NULL;
         break;

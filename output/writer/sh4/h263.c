@@ -48,7 +48,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -56,7 +56,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -87,9 +87,9 @@ static int writeData(void* _call)
         return 0;
     }
 
-    h263_printf(10, "VideoPts %lld\n", call->Pts);
+    h263_printf(10, "VideoPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         h263_err("NULL Data. ignoring...\n");
         return 0;

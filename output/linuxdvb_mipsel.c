@@ -21,10 +21,6 @@
 /* Includes                      */
 /* ***************************** */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include <stdio.h>
 #include <inttypes.h>
 #include <string.h>
@@ -42,8 +38,8 @@
 #include <pthread.h>
 #include <errno.h>
 #include <poll.h>
-#include <time.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "bcm_ioctls.h"
 
@@ -55,17 +51,34 @@
 #include "pes.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 #define cERR_LINUXDVB_NO_ERROR      0
 #define cERR_LINUXDVB_ERROR        -1
 
 static const char VIDEODEV[] = "/dev/dvb/adapter0/video0";
+#ifdef HAVE_DREAMNEXTGEN
+/* the audio decoder of the dreamaudiod service */
+static const char AUDIODEV[] = "/dev/dvb/adapter0/dreamaudio0";
+#else
 static const char AUDIODEV[] = "/dev/dvb/adapter0/audio0";
+#endif
 
 static int videofd 	= -1;
 static int audiofd 	= -1;
+
+/*
+ * What LinuxDvbStop() still has to do for a device: stop the decoder, which
+ * runs (or is held) since the open or its last PLAY, and give the source back
+ * to the demux, which the open set to memory. A playback stopped with "q" is
+ * stopped by OUTPUT_STOP and then closed by OUTPUT_CLOSE, and the close called
+ * LinuxDvbStop() again on the stopped decoders. Some Vu+ drivers are reported
+ * to crash on that second stop; now every step happens once.
+ * Every PLAY sets the running flag again, every STOP clears it.
+ */
+static bool videoRunning, audioRunning;
+static bool videoOnMemory, audioOnMemory;
 
 struct DVBApiVideoInfo_s
 {
@@ -76,26 +89,405 @@ struct DVBApiVideoInfo_s
 };
 static struct DVBApiVideoInfo_s videoInfo = {-1,-1,-1,-1,-1};
 
+#ifndef VIDEO_GET_FRAME_RATE
+#define VIDEO_GET_FRAME_RATE _IOR('o', 56, unsigned int)
+#endif
+
+static const char VIDEO_PROGRESSIVE_FILE[] = "/proc/stb/vmpeg/0/progressive";
+
+/*
+ * Completing a video track FFmpeg has no picture size of, and the
+ * progressive flag of every video track. videoInfo holds
+ * what the video events delivered, videoInfoAsked what the driver answered
+ * for the values no event came for.
+ */
+static struct DVBApiVideoInfo_s videoInfoAsked = {-1,-1,-1,-1,-1};
+enum
+{
+    VIDEO_INFO_START,   /* no video data written yet */
+    VIDEO_INFO_QUIET,   /* no event so far, the driver has not been asked */
+    VIDEO_INFO_HOLD,    /* asked; the answer is kept back until no event follows */
+    VIDEO_INFO_EVENTS,  /* events arrive; waiting for the last one */
+    VIDEO_INFO_DONE     /* reported */
+};
+static int videoInfoPhase = VIDEO_INFO_START;
+static bool videoInfoReported;
+/* the current video track has no picture size, or no progressive flag yet */
+static bool videoInfoWanted;
+static bool videoInfoNoSize;
+static int videoInfoRetries;
+#define VIDEO_INFO_MAX_RETRIES 10
+/* video data and the position requests both read the video events */
+static pthread_mutex_t videoInfoMutex = PTHREAD_MUTEX_INITIALIZER;
+static void LinuxDvbVideoInfoPoll(Context_t *context, unsigned long long pts);
+/* with -b a thread of its own polls for the video events, see LinuxDvbEventThread() */
+static void LinuxDvbEventThreadPause(bool paused);
+static void LinuxDvbEventThreadStop(void);
+static bool LinuxDvbEventThreadEnd(void);
+/* a thread of the player may still be in a poll of the driver on it: the
+ * device is not closed, the end of the process releases it */
+static bool videoLeftOpen, audioLeftOpen;
+/* -b: the buffering thread has been ended for this open, see LinuxDvbStop() */
+static bool bufferingClosed;
+/* the periods are measured with the decoder PTS (90 kHz) */
+#define VIDEO_INFO_QUIET_PTS   9000
+#define VIDEO_INFO_SETTLE_PTS 45000
+#define VIDEO_INFO_MAX_STEP  900000
+static unsigned long long videoInfoPts;
+static unsigned long long videoInfoProgress;
+static int videoInfoPtsSamples;
+
 unsigned long long int sCURRENT_PTS = 0;
 bool isBufferedOutput = false;
+/* Set once video with a PTS other than 0 went to the decoder since the last
+ * play, stop, flush or clear: from then on a VIDEO_GET_PTS of 0 is no position. */
+static volatile int videoPtsWritten;
+
+/* The position of a decoder that has run out of data. Vu+ decoders keep
+ * counting VIDEO_GET_PTS / AUDIO_GET_PTS with their clock after the last
+ * frame: a live stream whose playlist does not grow for 18 s reports a
+ * position 12 s after the last frame, and when data comes again the decoder
+ * goes back to the PTS of the frames it shows. So the position is kept
+ * within the data written to the decoder: once the decoder reports more than
+ * POS_BOUND_TOLERANCE after the highest PTS written, that PTS plus the
+ * tolerance is reported, until the decoder shows data again and has come up
+ * to that value. Only after the decoder was seen within the data: right
+ * after a clear it can still report the PTS of an earlier playback, which
+ * is left as it is. After a start (OUTPUT_PLAY) a decoder that has not yet
+ * shown any of the data may still count on with the clock of the earlier
+ * playback: an audio-only DTS file on VTi (Uno 4K SE, AV receiver) reported
+ * 9.5 s two seconds after the start with 3.9 s of data written, and its
+ * clock ran on for good. A value more than POS_BOUND_TOLERANCE after all
+ * data written since the start is no position of it, so until the decoder
+ * is seen within the data the lowest PTS written since the start is
+ * reported instead. Right after the start VIDEO_GET_PTS still answers what
+ * the previous playback left, also that of another process (13.3 s, 0.1 s
+ * after the start of a file at 0), and that can lie anywhere: until data is
+ * written since the start the position is 0, and a value further before the
+ * data than POS_BOUND_CATCH_UP, or POS_BOUND_LIMIT and more after it, is
+ * reported as the lowest PTS written as well, until the decoder is seen
+ * within the data or for POS_BOUND_START_MS after the first write. A value
+ * within the data that moves on in real time between two requests is a
+ * decoder that plays (a late first keyframe) and is taken.
+ * PTS are compared as 33 bit values.
+ * A decoder restarted by OUTPUT_SWITCH (the video output after a long gap,
+ * an audio track switch) reports stale or unrelated values until it shows
+ * what is written after the restart: until then, at most for
+ * POS_BOUND_RESTART_MS, the position stays at the last one reported.
+ * Neither the standing position nor that wait outlast data that comes
+ * again: when the data written has gone POS_BOUND_FLOWING beyond the
+ * position reported, the position follows the data (a decoder that runs
+ * just after the live edge, a decoder restarted again and again). */
+#define POS_BOUND_MASK       0x1FFFFFFFFULL
+#define POS_BOUND_TOLERANCE  27000ULL         /* 300 ms */
+#define POS_BOUND_CATCH_UP   90000ULL         /* 1 s */
+#define POS_BOUND_LIMIT      (600ULL * 90000) /* 10 min: further is no stall */
+#define POS_BOUND_RESTART_MS 5000
+#define POS_BOUND_FLOWING    360000ULL        /* 4 s */
+#ifndef POS_BOUND_START_MS
+#define POS_BOUND_START_MS   10000
+#endif
+typedef struct
+{
+    bool have_max;              /* max holds a PTS written since the last reset */
+    bool inside;                /* the decoder was seen within the written data */
+    bool latched;               /* latch is reported */
+    bool restarting;            /* restarted, not seen within the new data yet */
+    bool have_min;              /* min holds a PTS written since the restart */
+    bool have_reported;
+    bool started;               /* reset by OUTPUT_PLAY, not by a clear */
+    bool have_first;
+    unsigned long long max;     /* highest PTS written, 33 bit */
+    unsigned long long latch;
+    unsigned long long min;     /* lowest PTS written since the restart */
+    unsigned long long first;   /* lowest PTS written since the reset */
+    unsigned long long reported;
+    struct timespec restart_time;
+    struct timespec first_time; /* when the first PTS since the reset was written */
+    bool have_raw;
+    unsigned long long raw;     /* decoder value of the last request after a start */
+    struct timespec raw_time;   /* when it was asked */
+} PosBound_t;
+static PosBound_t videoPosBound, audioPosBound;
+/* written by the play thread, read by the position requests */
+static pthread_mutex_t posBoundMutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* how far a is after b, modulo 2^33 */
+static unsigned long long PosBoundAhead(unsigned long long a, unsigned long long b)
+{
+    return (a - b) & POS_BOUND_MASK;
+}
+
+/* a is b or after b */
+static bool PosBoundNotBefore(unsigned long long a, unsigned long long b)
+{
+    return PosBoundAhead(a, b) < (1ULL << 32);
+}
+
+static void PosBoundWritten(PosBound_t *bound, unsigned long long pts)
+{
+    if (pts == INVALID_PTS_VALUE)
+        return;
+    pts &= POS_BOUND_MASK;
+    pthread_mutex_lock(&posBoundMutex);
+    /* B-frames and backward jumps leave the maximum as it is */
+    if (!bound->have_max || (pts != bound->max && PosBoundNotBefore(pts, bound->max)))
+    {
+        bound->max = pts;
+        bound->have_max = true;
+    }
+    if (!bound->have_first || !PosBoundNotBefore(pts, bound->first))
+    {
+        if (!bound->have_first)
+            clock_gettime(CLOCK_MONOTONIC, &bound->first_time);
+        bound->first = pts;
+        bound->have_first = true;
+    }
+    if (bound->restarting && (!bound->have_min || !PosBoundNotBefore(pts, bound->min)))
+    {
+        bound->min = pts;
+        bound->have_min = true;
+    }
+    pthread_mutex_unlock(&posBoundMutex);
+}
+
+static PosBound_t *PosBoundOf(const char *type, int i)
+{
+    if (i == 0 && (!type || !strcmp(type, "video")))
+        return &videoPosBound;
+    if (i == 1 && (!type || !strcmp(type, "audio")))
+        return &audioPosBound;
+    return NULL;
+}
+
+static void PosBoundReset(const char *type)
+{
+    int i;
+
+    pthread_mutex_lock(&posBoundMutex);
+    for (i = 0; i < 2; i++)
+    {
+        PosBound_t *bound = PosBoundOf(type, i);
+        if (bound)
+            memset(bound, 0, sizeof(*bound));
+    }
+    pthread_mutex_unlock(&posBoundMutex);
+}
+
+/* A start: the reset, and a value after all the data written since is no
+ * position of this playback until the decoder was seen within the data. */
+static void PosBoundStart(const char *type)
+{
+    int i;
+
+    PosBoundReset(type);
+    pthread_mutex_lock(&posBoundMutex);
+    for (i = 0; i < 2; i++)
+    {
+        PosBound_t *bound = PosBoundOf(type, i);
+        if (bound)
+            bound->started = true;
+    }
+    pthread_mutex_unlock(&posBoundMutex);
+}
+
+/* The decoder starts again with the data written from now on, which goes
+ * on from the data before. */
+static void PosBoundRestart(const char *type)
+{
+    int i;
+
+    pthread_mutex_lock(&posBoundMutex);
+    for (i = 0; i < 2; i++)
+    {
+        PosBound_t *bound = PosBoundOf(type, i);
+        if (!bound)
+            continue;
+        if (!bound->have_reported || !bound->inside)
+        {
+            bool started = bound->started;
+            memset(bound, 0, sizeof(*bound));
+            bound->started = started;
+            continue;
+        }
+        /* one more restart before the decoder is back does not extend the wait */
+        if (!bound->restarting)
+            clock_gettime(CLOCK_MONOTONIC, &bound->restart_time);
+        bound->restarting = true;
+        bound->have_min = false;
+    }
+    pthread_mutex_unlock(&posBoundMutex);
+}
+
+static unsigned long long PosBoundApply(PosBound_t *bound, unsigned long long pts)
+{
+    unsigned long long ahead, reported = pts;
+
+    pthread_mutex_lock(&posBoundMutex);
+    if (!bound->have_max)
+    {
+        /* nothing written since the start: the decoder answers with what
+         * an earlier playback left */
+        if (bound->started)
+            reported = 0;
+        goto out;
+    }
+    ahead = PosBoundAhead(pts, bound->max);
+    if (bound->restarting)
+    {
+        struct timespec now;
+        int64_t ms;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        ms = (int64_t)(now.tv_sec - bound->restart_time.tv_sec) * 1000 +
+             (now.tv_nsec - bound->restart_time.tv_nsec) / 1000000;
+        if (bound->have_min && PosBoundNotBefore(pts + POS_BOUND_TOLERANCE, bound->min) &&
+            (ahead <= POS_BOUND_TOLERANCE || ahead >= (1ULL << 32)))
+        {
+            /* the decoder shows the data written since the restart */
+            bound->restarting = false;
+        }
+        else if (ms < POS_BOUND_RESTART_MS &&
+                 !PosBoundNotBefore(bound->max, bound->reported + POS_BOUND_FLOWING))
+        {
+            reported = bound->reported;
+            goto out;
+        }
+        else
+        {
+            bound->restarting = false;
+        }
+    }
+    if (!bound->inside && bound->have_first && pts != bound->first &&
+        PosBoundAhead(bound->first, pts) <= POS_BOUND_CATCH_UP)
+    {
+        /* just before the first PTS written since the reset: the clock of
+         * a decoder that shows nothing of the data yet, which goes past 0
+         * when the data starts at 0 (2^33 - 600 was reported as 95443711
+         * ms). The first PTS until the decoder is within the data. An older
+         * clock further before the data is left as it is, except after a
+         * start, see below. */
+        reported = bound->first;
+        goto out;
+    }
+    if (!bound->inside && bound->started && bound->have_first)
+    {
+        /* Since the start the decoder has shown nothing of the data. A
+         * value further before the first PTS written, or further after it
+         * than the time since that write (and a second) allows, is what an
+         * earlier playback left: the first PTS written instead, for
+         * POS_BOUND_START_MS after it.
+         * A value within the written data that has moved on since the
+         * last request, at most as far as the time between the two, is a
+         * decoder that plays, also further in than the time since the
+         * first write: a TS whose first keyframe comes 3 s after its first
+         * PTS is written within a second, and the decoder shows that
+         * keyframe at once and plays on from it. Reporting the first PTS
+         * there for 10 s made the end of the file see no progress and end
+         * the playback 1 s after the last write. */
+        unsigned long long before = PosBoundAhead(bound->first, pts);
+        unsigned long long after = PosBoundAhead(pts, bound->first);
+        struct timespec now;
+        int64_t ms;
+        bool stale;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        ms = (int64_t)(now.tv_sec - bound->first_time.tv_sec) * 1000 +
+             (now.tv_nsec - bound->first_time.tv_nsec) / 1000000;
+        if (ms < 0)
+            ms = 0;
+        stale = ms < POS_BOUND_START_MS &&
+                ((before > POS_BOUND_CATCH_UP && before < (1ULL << 32)) ||
+                 (after < (1ULL << 32) && after > (unsigned long long)ms * 90 + POS_BOUND_CATCH_UP));
+        if (stale && after < (1ULL << 32) &&
+            after <= PosBoundAhead(bound->max, bound->first) + POS_BOUND_TOLERANCE &&
+            bound->have_raw && pts != bound->raw && PosBoundNotBefore(pts, bound->raw))
+        {
+            int64_t step_ms = (int64_t)(now.tv_sec - bound->raw_time.tv_sec) * 1000 +
+                              (now.tv_nsec - bound->raw_time.tv_nsec) / 1000000;
+            if (step_ms < 0)
+                step_ms = 0;
+            if (PosBoundAhead(pts, bound->raw) <= (unsigned long long)step_ms * 90 + POS_BOUND_TOLERANCE)
+                stale = false;
+        }
+        bound->raw = pts;
+        bound->raw_time = now;
+        bound->have_raw = true;
+        if (stale)
+        {
+            reported = bound->first;
+            goto out;
+        }
+    }
+    if (ahead > POS_BOUND_TOLERANCE && ahead < POS_BOUND_LIMIT)
+    {
+        /* past the data */
+        if (!bound->latched)
+        {
+            /* not seen within the data since the start: nothing of it shown */
+            if (!bound->inside && bound->started && bound->have_first)
+                reported = bound->first;
+            if (!bound->inside)
+                goto out;
+            bound->latched = true;
+            bound->latch = pts - ahead + POS_BOUND_TOLERANCE;
+            if (pts <= POS_BOUND_MASK)
+                bound->latch &= POS_BOUND_MASK;
+        }
+        else if (PosBoundNotBefore(bound->max + POS_BOUND_TOLERANCE, bound->latch + POS_BOUND_FLOWING))
+        {
+            /* data comes again, the decoder stays after it: follow the data */
+            bound->latch = (bound->max + POS_BOUND_TOLERANCE) & POS_BOUND_MASK;
+        }
+        reported = bound->latch;
+        goto out;
+    }
+    if (ahead <= POS_BOUND_TOLERANCE || ahead >= (1ULL << 32))
+        bound->inside = true;
+    if (bound->latched)
+    {
+        /* data again: no step back below what was reported */
+        unsigned long long behind = PosBoundAhead(bound->latch, pts);
+        if (behind && behind < POS_BOUND_CATCH_UP)
+        {
+            reported = bound->latch;
+            goto out;
+        }
+        bound->latched = false;
+    }
+out:
+    bound->reported = reported;
+    bound->have_reported = true;
+    pthread_mutex_unlock(&posBoundMutex);
+    return reported;
+}
 
 /* Vu+ Ultimo 4K / Duo 4K SE: the first DD+ passthrough start through the
  * playpump stays silent, while an audio track switch made after it gives
- * sound. So the start is followed once by the same restart, see
- * LinuxDvbEac3RestartState(). 0 = none, 1 = waiting for the first DD+
+ * sound. So on these two models the start is followed once by the restart
+ * a track switch does, see LinuxDvbEac3RestartState().
+ * 0 = none (always, on every other box), 1 = waiting for the first DD+
  * packet, 2 = packet written. */
 #define EAC3_RESTART_DELAY_MS 100
+#define EAC3_RESTART_FAST_POLL_MS 5000
 static volatile int eac3Restart = 0;
-/* The audio bypass mode currently configured in the driver, and whether the
- * DD+ passthrough start has already had its one un-sticking restart. Together
- * they let a later DD+ -> DD+ track switch (native Atmos <-> transcoded
- * TrueHD, both AUDIOTYPE_AC3_PLUS) keep the decoder running instead of
- * re-setting the bypass mode, which reconfigures the HDMI output and silences
- * the Vu+ Ultimo 4K / Duo 4K SE. The servicemp3 sink-bin fix avoids the same
- * fault by dropping the redundant E-AC3 caps event. */
-static int currentAudioBypass = -1;
-static int eac3Settled = 0;
-static struct timespec eac3PlayTime;
+static int eac3RestartChecked = 0;
+static struct timespec eac3PlayTime;   /* set before the state becomes 1 */
+static struct timespec eac3PacketTime; /* set before the state becomes 2 */
+
+/* Same two models: setting the DD+ bypass mode again while the decoder runs
+ * DD+ passthrough reconfigures the HDMI output and leaves it silent. Set when
+ * an audio switch has started the decoder in DD+ bypass mode on a box where
+ * LinuxDvbEac3NeedsRestart() holds, cleared by every other start or bypass
+ * mode: the next switch to a DD+ track then only flushes the decoder. */
+static int eac3BypassKept = 0;
+
+/* Left, stereo or right of dual mono audio (two languages on L and R), an
+ * OutputAudioChannel_t: the one asked for, and the one the decoder was last
+ * set to. Drivers may reset it when the decoder starts, so a selection other
+ * than stereo is set again after every AUDIO_PLAY. */
+static int audioChannel = OUTPUT_AUDIO_CHANNEL_STEREO;
+static int audioChannelApplied = OUTPUT_AUDIO_CHANNEL_STEREO;
 
 pthread_mutex_t LinuxDVBmutex;
 
@@ -148,12 +540,38 @@ static void LinuxDvbTiming(const char *phase)
     }
 }
 
+/* "1" in the environment variable name, on a HiSilicon receiver only. The
+ * HiSilicon switches are off by default: they come from receivers nobody here
+ * could test on (OpenVu/exteplayer3, an Atto Pixel fork). */
+static bool LinuxDvbHisiOptIn(const char *name)
+{
+    const char *env = getenv(name);
+    return env && env[0] == '1' && env[1] == '\0' && STB_HISILICON == GetSTBType();
+}
+
+/* EP3_HISI_NO_CLEAR=1: no VIDEO/AUDIO_CLEAR_BUFFER when the devices are
+ * opened and when the video starts (OpenVu/exteplayer3 e2919c1,
+ * leandrotsampa/exteplayer3 08284a5); the clears of a seek, a switch or a
+ * stop stay. */
+static bool LinuxDvbSkipStartClear(void)
+{
+    return LinuxDvbHisiOptIn("EP3_HISI_NO_CLEAR");
+}
+
 /* The caller owns LinuxDVBmutex. */
 static int LinuxDvbApplyAVSync(Context_t *context)
 {
     int requested = context && context->playback ? context->playback->AVSync : 0;
     int dash = context && context->playback && context->playback->isDash;
     int enabled = dash ? requested : 0;
+    /* EP3_HISI_AV_SYNC=1: the hardware A/V sync of the playback also for
+     * streams that are not DASH (OpenVu/exteplayer3 e82045e) */
+    if (!dash && LinuxDvbHisiOptIn("EP3_HISI_AV_SYNC"))
+        enabled = requested;
+#ifdef HAVE_DREAMNEXTGEN
+    /* The Dreambox kernel audio backend also needs sync for non-DASH streams. */
+    enabled = 1;
+#endif
     if (ioctl(audiofd, AUDIO_SET_AV_SYNC, enabled) == -1)
     {
         applied_avsync = -1;
@@ -166,6 +584,34 @@ static int LinuxDvbApplyAVSync(Context_t *context)
     return 0;
 }
 
+/* The caller owns LinuxDVBmutex. AUDIO_CHANNEL_SELECT acts on decoded audio;
+ * a passthrough bitstream (bypass to HDMI/S/PDIF) is not changed by it. */
+static int LinuxDvbSetAudioChannel(int channel)
+{
+    audio_channel_select_t selection = AUDIO_STEREO;
+    if (OUTPUT_AUDIO_CHANNEL_LEFT == channel)
+        selection = AUDIO_MONO_LEFT;
+    else if (OUTPUT_AUDIO_CHANNEL_RIGHT == channel)
+        selection = AUDIO_MONO_RIGHT;
+    if (audiofd < 0)
+        return cERR_LINUXDVB_ERROR;
+    if (ioctl(audiofd, AUDIO_CHANNEL_SELECT, selection) < 0)
+    {
+        linuxdvb_err("AUDIO_CHANNEL_SELECT %d: ERROR %d, %s\n", (int)selection, errno, strerror(errno));
+        return cERR_LINUXDVB_ERROR;
+    }
+    audioChannelApplied = channel;
+    linuxdvb_printf(10, "audio channel %d\n", channel);
+    return cERR_LINUXDVB_NO_ERROR;
+}
+
+/* After AUDIO_PLAY: the selection again, as the decoder start may reset it. */
+static void LinuxDvbRestoreAudioChannel(void)
+{
+    if (OUTPUT_AUDIO_CHANNEL_STEREO != audioChannel)
+        LinuxDvbSetAudioChannel(audioChannel);
+}
+
 /* ***************************** */
 /* MISC Functions                */
 /* ***************************** */
@@ -173,7 +619,7 @@ static int LinuxDvbApplyAVSync(Context_t *context)
 #define getLinuxDVBMutex() pthread_mutex_lock(&LinuxDVBmutex)
 #define releaseLinuxDVBMutex() pthread_mutex_unlock(&LinuxDVBmutex)
 
-static bool LinuxDvbReadProc(const char *path, char *buf, size_t size)
+static bool LinuxDvbReadProcLine(const char *path, char *buf, size_t size)
 {
     FILE *f = fopen(path, "r");
     bool ok = false;
@@ -182,56 +628,58 @@ static bool LinuxDvbReadProc(const char *path, char *buf, size_t size)
     {
         ok = (NULL != fgets(buf, size, f));
         fclose(f);
+        if (ok)
+            buf[strcspn(buf, "\r\n")] = '\0';
     }
     return ok;
 }
 
+/* Read once, at the first audio start: one of the two models, and the box
+ * is set to hand DD+ on as a bitstream. EP3_EAC3_RESTART=1 / EP3_EAC3_RESTART=0
+ * in the environment forces it on / off, e.g. to try it on another model. */
 static bool LinuxDvbEac3NeedsRestart(void)
 {
+    const char *env = getenv("EP3_EAC3_RESTART");
     char model[32] = "";
     char mode[32] = "";
 
+    if (env && (env[0] == '0' || env[0] == '1') && env[1] == '\0')
+        return env[0] == '1';
     if (STB_VUPLUS != GetSTBType())
         return false;
-    if (!LinuxDvbReadProc("/proc/stb/info/vumodel", model, sizeof(model)) ||
-        !LinuxDvbReadProc("/proc/stb/audio/ac3", mode, sizeof(mode)))
+    if (!LinuxDvbReadProcLine("/proc/stb/info/vumodel", model, sizeof(model)) ||
+        !LinuxDvbReadProcLine("/proc/stb/audio/ac3", mode, sizeof(mode)))
         return false;
-    return (!strncmp(model, "ultimo4k", 8) || !strncmp(model, "duo4kse", 7)) &&
-           !strncmp(mode, "passthrough", 11);
+    return (!strcmp(model, "ultimo4k") || !strcmp(model, "duo4kse")) &&
+           !strcmp(mode, "passthrough");
 }
 
-/* Polled by the command loop: 1 while the restart waits, 2 (once) when it
- * is due, 0 otherwise. */
-int LinuxDvbEac3RestartState(void)
+static long LinuxDvbElapsedMs(const struct timespec *since)
 {
     struct timespec now;
-    long elapsed;
-
-    if (2 != eac3Restart)
-        return eac3Restart ? 1 : 0;
 
     clock_gettime(CLOCK_MONOTONIC, &now);
-    elapsed = (now.tv_sec - eac3PlayTime.tv_sec) * 1000 + (now.tv_nsec - eac3PlayTime.tv_nsec) / 1000000;
-    if (elapsed < EAC3_RESTART_DELAY_MS)
+    return (now.tv_sec - since->tv_sec) * 1000 + (now.tv_nsec - since->tv_nsec) / 1000000;
+}
+
+/* Polled by the command loop: 2 (once) when the restart is due, 1 while it
+ * is expected within milliseconds, 0 otherwise. */
+int LinuxDvbEac3RestartState(void)
+{
+    int state = eac3Restart;
+
+    if (0 == state)
+        return 0;
+    if (1 == state)
+    {
+        /* a stream that takes long to deliver its first DD+ packet is not
+         * polled fast for ever, the restart then comes with the next poll */
+        return LinuxDvbElapsedMs(&eac3PlayTime) < EAC3_RESTART_FAST_POLL_MS ? 1 : 0;
+    }
+    if (LinuxDvbElapsedMs(&eac3PacketTime) < EAC3_RESTART_DELAY_MS)
         return 1;
 
     return __sync_bool_compare_and_swap(&eac3Restart, 2, 0) ? 2 : 0;
-}
-
-/* The DTS-HD bypass mode (AUDIOTYPE_DTS_HD) is only usable on drivers that
- * have it: those with /proc/stb/audio/dtshd, and the Vu+ Ultimo 4K / Duo 4K SE
- * whose dvb-bcm7444.ko is patched for it. Everywhere else fall back to plain
- * DTS so a DTS-HD stream still plays as its core instead of going silent. */
-static bool LinuxDvbDtsHdUsable(void)
-{
-    char model[32] = "";
-    if (access("/proc/stb/audio/dtshd", F_OK) == 0)
-        return true;
-    if (STB_VUPLUS == GetSTBType() &&
-        LinuxDvbReadProc("/proc/stb/info/vumodel", model, sizeof(model)) &&
-        (!strncmp(model, "ultimo4k", 8) || !strncmp(model, "duo4kse", 7)))
-        return true;
-    return false;
 }
 
 static int LinuxDvbMapBypassMode(int bypass, bool primary)
@@ -241,10 +689,6 @@ static int LinuxDvbMapBypassMode(int bypass, bool primary)
     }
 
     switch(bypass) {
-        case AUDIOTYPE_DTS_HD:
-            if (!LinuxDvbDtsHdUsable())
-                bypass = AUDIOTYPE_DTS;   /* plain DTS: core only */
-            break;                        /* else leave as the DTS-HD mode */
         case AUDIOTYPE_RAW:
             bypass = primary ? 0x30 : 0xf;
             break;
@@ -259,9 +703,134 @@ static int LinuxDvbMapBypassMode(int bypass, bool primary)
             break;
         default:
             break;
-    };
+    }
 
     return bypass;
+}
+
+/*
+ * Some drivers pass DTS-HD MA and DTS:X through in full only in their DTS-HD
+ * mode (bypass mode 0x10); in plain DTS mode (2) they send the core alone.
+ * The track does not say whether the stream carries the HD extension, so the
+ * decoder is started in plain DTS mode as always and the first frame written
+ * after that decides: with an extension the decoder is restarted in DTS-HD
+ * mode before the frame goes out, see LinuxDvbDtsHdStart().
+ *
+ * Only where the driver's DTS-HD mode is known to cope with a receiver that
+ * has no DTS-HD: the drivers with /proc/stb/audio/dtshd, and the Vu+ Uno 4K
+ * SE, Ultimo 4K and Duo 4K SE, which have no such file.  On the Uno 4K SE an
+ * AV receiver with DTS-HD shows DTS-HD MA in this mode, and a TV without any
+ * DTS, connected directly, plays the same sound with and without it; OpenBH
+ * uses the mode on the Ultimo 4K and Duo 4K SE.  Other drivers may give such
+ * a receiver no sound at all, so everything else stays on plain DTS.
+ * EP3_DTS_HD_MODE=1 / EP3_DTS_HD_MODE=0 in the environment forces it on / off.
+ * Decided once, at the first DTS start or switch; it reads /proc files, so
+ * LinuxDvbSwitch() asks before it takes the mutex.
+ */
+static int LinuxDvbDtsHdModeUsable(void)
+{
+    static int usable = -1;
+    if (usable < 0)
+    {
+        const char *env = getenv("EP3_DTS_HD_MODE");
+        char model[32] = "";
+
+        if (env && (env[0] == '0' || env[0] == '1') && env[1] == '\0')
+            usable = env[0] == '1';
+        else if (STB_DREAMBOX == GetSTBType())
+            usable = 0;
+        else if (access("/proc/stb/audio/dtshd", F_OK) == 0)
+            usable = 1;
+        else
+            usable = STB_VUPLUS == GetSTBType() &&
+                     LinuxDvbReadProcLine("/proc/stb/info/vumodel", model, sizeof(model)) &&
+                     (!strcmp(model, "uno4kse") || !strcmp(model, "ultimo4k") ||
+                      !strcmp(model, "duo4kse"));
+    }
+    return usable;
+}
+
+/*
+ * Whether a framed DTS buffer carries a DTS-HD extension substream (DTS-HD
+ * HRA, DTS-HD MA, DTS:X, DTS Express): it starts with one, or one follows a
+ * 16 bit big endian core frame.
+ *
+ * This function and its comment are dvb_dts_has_hd_extension() of dtsframe.h
+ * in the dvbaudiosink of gstreamer1.0-plugin-dvbmediasink as patched by
+ * oe-alliance-core (0004-dvbaudiosink-dts-driver-fixes.patch), renamed and
+ * reindented.  SPDX-License-Identifier: MIT (the licence of that file).
+ */
+static int LinuxDvbDtsHasHdExtension(const uint8_t *input, size_t size)
+{
+    static const uint8_t exss[4] = { 0x64, 0x58, 0x20, 0x25 };
+    size_t frame_size;
+
+    if (!input || size < 8)
+        return 0;
+    if (!memcmp(input, exss, 4))
+        return 1;
+    if (input[0] != 0x7f || input[1] != 0xfe || input[2] != 0x80 || input[3] != 0x01)
+        return 0;
+    frame_size = (((size_t)input[5] & 0x03) << 12 | (size_t)input[6] << 4 | input[7] >> 4) + 1;
+    return size >= frame_size + 4 && !memcmp(input + frame_size, exss, 4);
+}
+
+/* Set where the audio decoder is started for a DTS track in plain DTS mode
+ * (LinuxDvbPlay, LinuxDvbSwitch), cleared by the first frame after that. */
+static int dts_hd_pending;
+
+/*
+ * Called with the first DTS frame after a start of the decoder.  A frame
+ * with an HD extension restarts the decoder in DTS-HD mode; nothing has been
+ * written to it yet.  Any other frame leaves the decoder as it is.
+ *
+ * A paused decoder is left alone and a later frame decides: restarting it
+ * here could not be told apart from a continue command arriving at the same
+ * time, and the decoder would stay paused or start too early.
+ */
+static void LinuxDvbDtsHdStart(Context_t *context, const uint8_t *data, size_t size)
+{
+    getLinuxDVBMutex();
+    if (dts_hd_pending && audiofd != -1 &&
+        context->playback->isPlaying && !context->playback->isPaused)
+    {
+        dts_hd_pending = 0;
+        if (LinuxDvbDtsHasHdExtension(data, size))
+        {
+            linuxdvb_printf(10, "DTS with HD extension, set bypass 0x%02x\n", AUDIOTYPE_DTS_HD);
+            eac3BypassKept = 0;
+            if (ioctl(audiofd, AUDIO_STOP, NULL) == -1)
+            {
+                linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
+            }
+            if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
+            {
+                linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+            }
+            if (ioctl(audiofd, AUDIO_SET_BYPASS_MODE, AUDIOTYPE_DTS_HD) < 0)
+            {
+                linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
+                /* back to the mode the decoder was started in */
+                if (ioctl(audiofd, AUDIO_SET_BYPASS_MODE, AUDIOTYPE_DTS) < 0)
+                {
+                    linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
+                }
+            }
+            if (context->playback->isDash)
+                LinuxDvbApplyAVSync(context);
+            audioRunning = true;
+            if (ioctl(audiofd, AUDIO_PLAY) == -1)
+            {
+                linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
+            }
+            if (ioctl(audiofd, AUDIO_CONTINUE) == -1)
+            {
+                linuxdvb_err("AUDIO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
+            }
+            LinuxDvbRestoreAudioChannel();
+        }
+    }
+    releaseLinuxDVBMutex();
 }
 
 static int LinuxDvbMapStreamType(int streamtype, bool primary)
@@ -288,7 +857,7 @@ static int LinuxDvbMapStreamType(int streamtype, bool primary)
             break;
         default:
             break;
-    };
+    }
 
     return streamtype;
 }
@@ -318,7 +887,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
 
     linuxdvb_printf(10, "v%d a%d\n", video, audio);
 
-    if (video && videofd < 0)
+    if (video && videofd < 0) 
     {
         videofd = LinuxDvbOpenRetryOnBusy(VIDEODEV, O_RDWR | O_NONBLOCK);
 
@@ -328,7 +897,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
             return cERR_LINUXDVB_ERROR;
         }
 
-        if (ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
+        if (!LinuxDvbSkipStartClear() && ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
         {
             linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
         }
@@ -337,16 +906,22 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
         {
             linuxdvb_err("VIDEO_SELECT_SOURCE: ERROR %d, %s\n", errno, strerror(errno));
         }
-
+        
         if (ioctl(videofd, VIDEO_FREEZE) == -1)
         {
             linuxdvb_err("VIDEO_FREEZE: ERROR %d, %s\n", errno, strerror(errno));
         }
+        videoRunning = true;
+        videoOnMemory = true;
+        videoLeftOpen = false;
 
         if (isBufferedOutput)
+        {
+            bufferingClosed = false;
             LinuxDvbBuffOpen(context, type, videofd, &LinuxDVBmutex);
+        }
     }
-    if (audio && audiofd < 0)
+    if (audio && audiofd < 0) 
     {
         audiofd = LinuxDvbOpenRetryOnBusy(AUDIODEV, O_RDWR | O_NONBLOCK);
 
@@ -356,7 +931,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
             return cERR_LINUXDVB_ERROR;
         }
 
-        if (ioctl( audiofd, AUDIO_CLEAR_BUFFER) == -1)
+        if (!LinuxDvbSkipStartClear() && ioctl( audiofd, AUDIO_CLEAR_BUFFER) == -1)
         {
             linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
         }
@@ -366,13 +941,27 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
             linuxdvb_err("AUDIO_SELECT_SOURCE: ERROR %d, %s\n", errno, strerror(errno));
         }
 
+#ifdef HAVE_DREAMNEXTGEN
+        /* the kernel syncs the audio of the dreamaudio device to the video */
+        if (ioctl(audiofd, AUDIO_SET_AV_SYNC, 1) == -1)
+        {
+            linuxdvb_err("AUDIO_SET_AV_SYNC: ERROR %d, %s\n", errno, strerror(errno));
+        }
+#endif
+        
         if (ioctl( audiofd, AUDIO_PAUSE) == -1)
         {
             linuxdvb_err("AUDIO_PAUSE: ERROR %d, %s\n", errno, strerror(errno));
         }
+        audioRunning = true;
+        audioOnMemory = true;
+        audioLeftOpen = false;
 
         if (isBufferedOutput)
+        {
+            bufferingClosed = false;
             LinuxDvbBuffOpen(context, type, audiofd, &LinuxDVBmutex);
+        }
     }
 
     return cERR_LINUXDVB_NO_ERROR;
@@ -388,27 +977,71 @@ int LinuxDvbClose(Context_t  *context, char *type)
     /* closing stand alone is not allowed, so prevent
      * user from closing and don't call stop. stop will
      * set default values for us (speed and so on).
+     * After OUTPUT_STOP there is nothing left for it to do.
      */
     LinuxDvbStop(context, type);
 
-    getLinuxDVBMutex();
+    /* the event thread has been ended by the stop; the next open starts one */
+    if (video)
+        LinuxDvbEventThreadStop();
 
-    if (isBufferedOutput)
-        LinuxDvbBuffClose(context);
+    /* with -b the stop has ended the buffering thread as well */
+    getLinuxDVBMutex();
 
     if (video && videofd != -1)
     {
-        close(videofd);
+        if (videoLeftOpen)
+            linuxdvb_err("video device left open: a thread may still be in a poll of the driver\n");
+        else
+            close(videofd);
         videofd = -1;
     }
     if (audio && audiofd != -1)
     {
-        close(audiofd);
+        if (audioLeftOpen)
+            linuxdvb_err("audio device left open: a thread may still be in a poll of the driver\n");
+        else
+            close(audiofd);
         audiofd = -1;
     }
 
     releaseLinuxDVBMutex();
     return cERR_LINUXDVB_NO_ERROR;
+}
+
+/* Broadcom drivers take the frame rate from this node when the stream itself
+ * carries none (H.264 without VUI timing, MPEG-4 part 2, some VC-1) and report
+ * it to the front end. Written before VIDEO_SET_STREAMTYPE with the frame rate
+ * of the container, the nearest the driver accepts, as gstdvbvideosink and
+ * libstbplayer do; a box without the node is left alone. */
+static void LinuxDvbSetFallbackFramerate(Context_t *context)
+{
+    static const uint32_t rates[] = {23976, 24000, 25000, 29970, 30000, 50000, 59940, 60000};
+    Track_t *track = NULL;
+    uint32_t best = rates[0], i;
+    FILE *f;
+
+    if (context->manager->video->Command(context, MANAGER_GET_TRACK, &track) < 0 ||
+        track == NULL || track->frame_rate == 0)
+    {
+        return;
+    }
+    for (i = 1; i < sizeof(rates) / sizeof(rates[0]); i++)
+    {
+        uint32_t diff = track->frame_rate > rates[i] ? track->frame_rate - rates[i] : rates[i] - track->frame_rate;
+        uint32_t bestDiff = track->frame_rate > best ? track->frame_rate - best : best - track->frame_rate;
+        if (diff < bestDiff)
+            best = rates[i];
+    }
+    f = fopen("/proc/stb/vmpeg/0/fallback_framerate", "w");
+    if (f == NULL)
+    {
+        linuxdvb_printf(20, "no fallback_framerate: %s\n", strerror(errno));
+        return;
+    }
+    fprintf(f, "%u", best);
+    fclose(f);
+    linuxdvb_printf(10, "fallback_framerate %u for %u\n", best, track->frame_rate);
 }
 
 int LinuxDvbPlay(Context_t  *context, char *type) {
@@ -437,6 +1070,7 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             linuxdvb_printf(20, "found writer %s for encoding %s\n", writer->caps->name, Encoding);
             if (writer->reset)
                 writer->reset();
+            LinuxDvbSetFallbackFramerate(context);
             ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, true));
             if (ret < 0) ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, false));
             if (ret < 0)
@@ -447,18 +1081,19 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
         }
         free(Encoding);
 
+        videoRunning = true;
         if (0 != ioctl(videofd, VIDEO_PLAY))
         {
             linuxdvb_err("VIDEO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
             ret = cERR_LINUXDVB_ERROR;
         }
-
+        
         if (ioctl(videofd, VIDEO_CONTINUE) == -1)
         {
             linuxdvb_err("VIDEO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
         }
 
-        if (ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
+        if (!LinuxDvbSkipStartClear() && ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
         {
             linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
         }
@@ -470,12 +1105,15 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
         linuxdvb_printf(20, "0 A %s\n", Encoding);
 
         writer = getWriter(Encoding);
-
+        dts_hd_pending = writer && AUDIOTYPE_DTS == writer->caps->dvbStreamType && LinuxDvbDtsHdModeUsable();
+        /* the first switch after a start always restarts the decoder */
+        eac3BypassKept = 0;
+        
         if (writer == NULL)
         {
             linuxdvb_err("cannot found writer for encoding %s using default\n", Encoding);
             ret = cERR_LINUXDVB_ERROR;
-        }
+        } 
         else
         {
             linuxdvb_printf(20, "found writer %s for encoding %s\n", writer->caps->name, Encoding);
@@ -486,8 +1124,6 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
                 linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
                 ret = cERR_LINUXDVB_ERROR;
             }
-            else
-                currentAudioBypass = writer->caps->dvbStreamType;
         }
 
         if (context->playback->isDash)
@@ -507,15 +1143,19 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             }
             timing_after_switch = 1;
         }
-        eac3Restart = 0;
-        eac3Settled = 0;
-        if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType && LinuxDvbEac3NeedsRestart())
+        /* the first audio start only, a loop restart plays on */
+        if (!eac3RestartChecked)
         {
-            linuxdvb_printf(10, "DD+ passthrough start, audio restart armed\n");
-            clock_gettime(CLOCK_MONOTONIC, &eac3PlayTime);
-            eac3Restart = 1;
+            eac3RestartChecked = 1;
+            if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
+                !context->playback->isDash && LinuxDvbEac3NeedsRestart())
+            {
+                linuxdvb_printf(10, "DD+ passthrough start, audio restart armed\n");
+                clock_gettime(CLOCK_MONOTONIC, &eac3PlayTime);
+                eac3Restart = 1;
+            }
         }
-
+        audioRunning = true;
         if (ioctl(audiofd, AUDIO_PLAY) < 0)
         {
             linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
@@ -527,6 +1167,9 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             linuxdvb_err("AUDIO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
             ret = cERR_LINUXDVB_ERROR;
         }
+        getLinuxDVBMutex();
+        LinuxDvbRestoreAudioChannel();
+        releaseLinuxDVBMutex();
         free(Encoding);
     }
 
@@ -534,18 +1177,16 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
     return context->playback->isDash ? ret : 0;
 }
 
-int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
+/* The stop of the video decoder, for LinuxDvbStop() and the stop before the
+ * exit (LinuxDvbFallbackStop()). The caller owns LinuxDVBmutex, videofd is
+ * open. A decoder that is stopped already is left alone, see videoRunning. */
+static int LinuxDvbStopVideoLocked(void)
 {
     int ret = cERR_LINUXDVB_NO_ERROR;
-    unsigned char video = !strcmp("video", type);
-    unsigned char audio = !strcmp("audio", type);
 
-    linuxdvb_printf(10, "v%d a%d\n", video, audio);
-
-    getLinuxDVBMutex();
-
-    if (video && videofd != -1)
+    if (videoRunning)
     {
+        videoRunning = false;
         if (ioctl(videofd, VIDEO_CLEAR_BUFFER) == -1)
         {
             linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
@@ -559,9 +1200,29 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
 
         ioctl(videofd, VIDEO_SLOWMOTION, 0);
         ioctl(videofd, VIDEO_FAST_FORWARD, 0);
+    }
+    if (videoOnMemory)
+    {
+        videoOnMemory = false;
         ioctl(videofd, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_DEMUX);
     }
-    if (audio && audiofd != -1) {
+    return ret;
+}
+
+/* The same for the audio decoder; the caller owns LinuxDVBmutex, audiofd is
+ * open. */
+static int LinuxDvbStopAudioLocked(void)
+{
+    int ret = cERR_LINUXDVB_NO_ERROR;
+
+    /* not left or right for what plays next, DVB services included;
+     * the selection itself stays for a start that follows */
+    if (OUTPUT_AUDIO_CHANNEL_STEREO != audioChannelApplied)
+        LinuxDvbSetAudioChannel(OUTPUT_AUDIO_CHANNEL_STEREO);
+
+    if (audioRunning)
+    {
+        audioRunning = false;
         if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
         {
             linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
@@ -572,13 +1233,57 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
             linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
             ret = cERR_LINUXDVB_ERROR;
         }
+    }
+    if (audioOnMemory)
+    {
+        audioOnMemory = false;
         ioctl(audiofd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
-        eac3Restart = 0;
-        eac3Settled = 0;
-        currentAudioBypass = -1;
+    }
+    eac3Restart = 0;
+    eac3BypassKept = 0;
+    return ret;
+}
+
+int LinuxDvbStop(Context_t  *context, char * type)
+{
+    int ret = cERR_LINUXDVB_NO_ERROR;
+    unsigned char video = !strcmp("video", type);
+    unsigned char audio = !strcmp("audio", type);
+
+    linuxdvb_printf(10, "v%d a%d\n", video, audio);
+
+    /* no poll of the event thread is in the driver when the decoder stops */
+    if (video && !videoLeftOpen && !LinuxDvbEventThreadEnd())
+        videoLeftOpen = true;
+
+    /* -b: the buffering thread writes to both devices. It ends before the
+     * first decoder is stopped, so that no write of it waits in the driver
+     * then. One that has not ended within the wait of LinuxDvbBuffClose()
+     * may still sleep in the driver: the devices are left open for the end
+     * of the process, and it is not waited for a second time. */
+    if (isBufferedOutput && !bufferingClosed && (video || audio))
+    {
+        bufferingClosed = true;
+        if (LinuxDvbBuffClose(context) < 0)
+        {
+            linuxdvb_err("buffering thread still in a write to the driver: devices left open\n");
+            videoLeftOpen = true;
+            audioLeftOpen = true;
+        }
     }
 
+    getLinuxDVBMutex();
+
+    if (video && videofd != -1 && LinuxDvbStopVideoLocked() < 0)
+        ret = cERR_LINUXDVB_ERROR;
+    if (audio && audiofd != -1 && LinuxDvbStopAudioLocked() < 0)
+        ret = cERR_LINUXDVB_ERROR;
+
     releaseLinuxDVBMutex();
+
+    /* a write that waits for room tries again now, and ends at a stop */
+    if (!isBufferedOutput)
+        WriterWakeUp();
 
     return ret;
 }
@@ -592,7 +1297,7 @@ int LinuxDvbPause(Context_t  *context __attribute__((unused)), char *type) {
 
     getLinuxDVBMutex();
 
-    if (video && videofd != -1)
+    if (video && videofd != -1) 
     {
         if (ioctl(videofd, VIDEO_FREEZE, NULL) == -1)
         {
@@ -600,7 +1305,7 @@ int LinuxDvbPause(Context_t  *context __attribute__((unused)), char *type) {
             ret = cERR_LINUXDVB_ERROR;
         }
     }
-
+    
     if (audio && audiofd != -1)
     {
         if (ioctl(audiofd, AUDIO_PAUSE, NULL) == -1)
@@ -630,7 +1335,7 @@ int LinuxDvbContinue(Context_t  *context __attribute__((unused)), char * type) {
             ret = cERR_LINUXDVB_ERROR;
         }
     }
-
+    
     if (audio && audiofd != -1)
     {
         if (ioctl(audiofd, AUDIO_CONTINUE, NULL) == -1)
@@ -639,9 +1344,11 @@ int LinuxDvbContinue(Context_t  *context __attribute__((unused)), char * type) {
             ret = cERR_LINUXDVB_ERROR;
         }
     }
-
+    
     if (isBufferedOutput)
         LinuxDvbBuffResume(context);
+    else
+        WriterWakeUp();
 
     linuxdvb_printf(10, "exiting\n");
 
@@ -656,6 +1363,7 @@ int LinuxDvbAudioMute(Context_t  *context __attribute__((unused)), char *flag) {
     if (audiofd != -1) {
         if(*flag == '1')
         {
+            audioRunning = false;
             if (ioctl(audiofd, AUDIO_STOP, NULL) == -1)
             {
                 linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
@@ -664,10 +1372,17 @@ int LinuxDvbAudioMute(Context_t  *context __attribute__((unused)), char *flag) {
         }
         else
         {
+            audioRunning = true;
             if (ioctl(audiofd, AUDIO_PLAY) == -1)
             {
                 linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
                 ret = cERR_LINUXDVB_ERROR;
+            }
+            else
+            {
+                getLinuxDVBMutex();
+                LinuxDvbRestoreAudioChannel();
+                releaseLinuxDVBMutex();
             }
         }
     }
@@ -677,7 +1392,7 @@ int LinuxDvbAudioMute(Context_t  *context __attribute__((unused)), char *flag) {
     return ret;
 }
 
-int LinuxDvbFlush(Context_t  *context __attribute__((unused)), char * type)
+int LinuxDvbFlush(Context_t  *context __attribute__((unused)), char * type) 
 {
     return cERR_LINUXDVB_NO_ERROR;
 }
@@ -713,7 +1428,7 @@ int LinuxDvbAVSync(Context_t  *context, char *type __attribute__((unused))) {
     int32_t ret = cERR_LINUXDVB_NO_ERROR;
     /* konfetti: this one is dedicated to audiofd so we
      * are ignoring what is given by type! I think we should
-     * remove this param. Therefor we should add a variable
+     * remove this param. Therefore we should add a variable
      * setOn or something like that instead, this would remove
      * using a variable inside the structure.
      */
@@ -729,7 +1444,7 @@ int LinuxDvbAVSync(Context_t  *context, char *type __attribute__((unused))) {
     return ret;
 }
 
-int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
+int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type) 
 {
     int32_t ret = cERR_LINUXDVB_NO_ERROR;
     uint8_t video = !strcmp("video", type);
@@ -737,11 +1452,11 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
 
     linuxdvb_printf(10, "LinuxDvbClear v%d a%d\n", video, audio);
 
-    if ( (video && videofd != -1) || (audio && audiofd != -1) )
+    if ( (video && videofd != -1) || (audio && audiofd != -1) ) 
     {
         getLinuxDVBMutex();
 
-        if (video && videofd != -1)
+        if (video && videofd != -1) 
         {
             if (ioctl(videofd, VIDEO_CLEAR_BUFFER) == -1)
             {
@@ -749,7 +1464,7 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
                 ret = cERR_LINUXDVB_ERROR;
             }
         }
-        else if (audio && audiofd != -1)
+        else if (audio && audiofd != -1) 
         {
             if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
             {
@@ -770,6 +1485,7 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
                 {
                     if (writer->reset)
                         writer->reset();
+                    eac3BypassKept = 0;
                     if (ioctl(audiofd, AUDIO_SET_BYPASS_MODE,
                               LinuxDvbMapBypassMode(AUDIOTYPE_RAW, true)) < 0 &&
                         ioctl(audiofd, AUDIO_SET_BYPASS_MODE,
@@ -778,23 +1494,29 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
                         linuxdvb_err("AUDIO_SET_BYPASS_MODE: %s\n", strerror(errno));
                         ret = cERR_LINUXDVB_ERROR;
                     }
+                    /* The buffer is cleared at this point. Restarting a decoder
+                     * that still runs is not an error of the clear. */
+                    audioRunning = true;
                     if (ioctl(audiofd, AUDIO_PLAY) < 0)
                     {
                         linuxdvb_err("AUDIO_PLAY: %s\n", strerror(errno));
-                        ret = cERR_LINUXDVB_ERROR;
                     }
+                    LinuxDvbRestoreAudioChannel();
                 }
                 free(encoding);
             }
             if (ioctl(audiofd, AUDIO_CONTINUE) < 0)
             {
                 linuxdvb_err("AUDIO_CONTINUE: %s\n", strerror(errno));
-                ret = cERR_LINUXDVB_ERROR;
             }
         }
 
         releaseLinuxDVBMutex();
     }
+
+    /* the buffer is empty: a write that waits for room tries again now */
+    if (!isBufferedOutput)
+        WriterWakeUp();
 
     linuxdvb_printf(10, "exiting\n");
 
@@ -803,26 +1525,53 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
 
 int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long int* pts) {
     int32_t ret = cERR_LINUXDVB_ERROR;
+    int zeroVideoPts = 0;
+    /* not sCURRENT_PTS: the command, play and live sync threads ask at once */
+    unsigned long long int current = 0;
 
     linuxdvb_printf(50, "\n");
 
     // GET_PTS is immutable call, so it can be done in parallel to other requests
-    if (videofd > -1 && !ioctl(videofd, VIDEO_GET_PTS, (void*)&sCURRENT_PTS))
+    if (videofd > -1 && !ioctl(videofd, VIDEO_GET_PTS, (void*)&current))
     {
         ret = cERR_LINUXDVB_NO_ERROR;
+        /* front ends ask for the position all the time, also when no more data is written */
+        LinuxDvbVideoInfoPoll(context, current);
+        /* Some Broadcom drivers answer VIDEO_GET_PTS with 0 for the whole
+         * memory-source session, or until the decoder runs again. After video
+         * with a PTS was written, 0 is no position: the audio decoder's PTS is
+         * taken when it has one. */
+        zeroVideoPts = current == 0 && videoPtsWritten;
+        /* a real video position is kept within the written video */
+        if (!zeroVideoPts)
+            current = PosBoundApply(&videoPosBound, current);
     }
-    else
+    else if (videofd > -1)
     {
         linuxdvb_err("VIDEO_GET_PTS: ERROR %d, %s\n", errno, strerror(errno));
     }
 
-    if (ret != cERR_LINUXDVB_NO_ERROR)
+    if (zeroVideoPts)
     {
-        if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&sCURRENT_PTS))
+        unsigned long long int audioPts = 0;
+        if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&audioPts) && audioPts != 0)
         {
-            ret = cERR_LINUXDVB_NO_ERROR;
+            /* the audio position, kept within the written audio */
+            current = PosBoundApply(&audioPosBound, audioPts);
         }
         else
+        {
+            linuxdvb_printf(50, "VIDEO_GET_PTS 0 after written video, no audio PTS\n");
+        }
+    }
+    else if (ret != cERR_LINUXDVB_NO_ERROR)
+    {
+        if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&current))
+        {
+            ret = cERR_LINUXDVB_NO_ERROR;
+            current = PosBoundApply(&audioPosBound, current);
+        }
+        else if (audiofd > -1)
         {
             linuxdvb_err("AUDIO_GET_PTS: ERROR %d, %s\n", errno, strerror(errno));
         }
@@ -830,10 +1579,10 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
 
     if (ret != cERR_LINUXDVB_NO_ERROR)
     {
-        sCURRENT_PTS = 0;
+        current = 0;
     }
 
-    *((unsigned long long int *)pts)=(unsigned long long int)sCURRENT_PTS;
+    *((unsigned long long int *)pts)=(unsigned long long int)current;
     return ret;
 }
 
@@ -842,12 +1591,14 @@ int LinuxDvbGetFrameCount(Context_t  *context __attribute__((unused)), unsigned 
     return cERR_LINUXDVB_NO_ERROR;
 }
 
-int LinuxDvbSwitch(Context_t  *context, char *type)
+int LinuxDvbSwitch(Context_t  *context, char *type) 
 {
     uint8_t audio = !strcmp("audio", type);
     uint8_t video = !strcmp("video", type);
     Writer_t *writer;
     int ret = 0;
+    int keepEac3 = 0;
+    bool eac3Box = false;
 
     linuxdvb_printf(10, "v%d a%d\n", video, audio);
 
@@ -861,6 +1612,11 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                 return cERR_LINUXDVB_ERROR;
             }
         }
+        /* reads /proc files: before the mutex is taken */
+        if (audio && audiofd != -1 && !context->playback->isDash)
+            eac3Box = LinuxDvbEac3NeedsRestart();
+        if (audio && audiofd != -1)
+            (void)LinuxDvbDtsHdModeUsable();
         getLinuxDVBMutex();
 
         if (audio && audiofd != -1) {
@@ -871,32 +1627,27 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                 linuxdvb_printf(10, "A %s\n", Encoding);
 
                 writer = getWriter(Encoding);
+                dts_hd_pending = writer && AUDIOTYPE_DTS == writer->caps->dvbStreamType && LinuxDvbDtsHdModeUsable();
 
-                /* Once DD+ passthrough is up and has had its un-sticking
-                 * restart, a later DD+ -> DD+ track switch (native Atmos <->
-                 * transcoded TrueHD) must NOT stop the decoder and re-set the
-                 * bypass mode: that reconfigures the HDMI output and leaves the
-                 * Vu+ Ultimo 4K / Duo 4K SE silent. The decoder is already in
-                 * DD+ mode, so just flush the old track and keep it running -
-                 * the servicemp3 sink-bin fix avoids the same fault. The first
-                 * switch after a DD+ start (eac3Settled == 0) still takes the
-                 * full restart below, which is what un-sticks that first start. */
-                if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
-                    AUDIOTYPE_AC3_PLUS == currentAudioBypass && eac3Settled &&
-                    LinuxDvbEac3NeedsRestart())
+                /* DD+ -> DD+ (native E-AC-3, DTS or TrueHD transcoded to
+                 * E-AC-3) on a Vu+ Ultimo 4K / Duo 4K SE whose decoder a switch
+                 * has already started in DD+ bypass mode: no stop and no new
+                 * bypass mode, which would silence the HDMI output, only the
+                 * old track is flushed. A paused decoder stays paused. */
+                if (eac3BypassKept && writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
+                    !context->playback->isDash)
                 {
-                    linuxdvb_printf(10, "DD+ -> DD+ switch: flush only, decoder kept running\n");
+                    linuxdvb_printf(10, "DD+ -> DD+ switch, decoder kept running\n");
                     if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
+                    {
                         linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
-                    if (context->playback->isDash && writer->reset)
-                        writer->reset();
-                    eac3Restart = 0;
+                    }
                     goto audio_switch_done;
                 }
+                eac3BypassKept = 0;
 
-                /* a switch is the restart the DD+ start was waiting for */
-                eac3Restart = 0;
-
+                /* a DASH switch that fails below leaves the decoder stopped */
+                audioRunning = false;
                 if (ioctl(audiofd, AUDIO_STOP ,NULL) == -1)
                 {
                     linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
@@ -925,7 +1676,7 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                         ret = cERR_LINUXDVB_ERROR;
                         goto audio_switch_done;
                     }
-                }
+                } 
                 else
                 {
                     if (context->playback->isDash && writer->reset && writer->reset() < 0)
@@ -942,12 +1693,12 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                         linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
                         if (context->playback->isDash)
                             goto audio_switch_done;
+                        /* only logged, the track is switched all the same */
+                        ret = 0;
                     }
                     else
                     {
-                        currentAudioBypass = writer->caps->dvbStreamType;
-                        if (AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
-                            eac3Settled = 1;
+                        keepEac3 = AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType && eac3Box;
                     }
                 }
 
@@ -960,11 +1711,24 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                     }
                     timing_after_switch = 1;
                 }
+                audioRunning = true;
                 if (ioctl(audiofd, AUDIO_PLAY) == -1)
                 {
                     linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
                     if (context->playback->isDash)
                         ret = cERR_LINUXDVB_ERROR;
+                }
+                else
+                {
+                    eac3BypassKept = keepEac3;
+                    /* the new codec can reset the left/right selection */
+                    LinuxDvbRestoreAudioChannel();
+                    /* AUDIO_PLAY starts the decoder: hold it again while the
+                     * playback is paused, the continue command releases it */
+                    if (context->playback->isPaused && ioctl(audiofd, AUDIO_PAUSE, NULL) == -1)
+                    {
+                        linuxdvb_err("AUDIO_PAUSE: ERROR %d, %s\n", errno, strerror(errno));
+                    }
                 }
 audio_switch_done:
                 free(Encoding);
@@ -995,18 +1759,24 @@ audio_switch_done:
                 if (writer == NULL)
                 {
                     linuxdvb_err("cannot found writer for encoding %s using default\n", Encoding);
-                }
+                } 
                 else
                 {
                     linuxdvb_printf(10, "found writer %s for encoding %s\n", writer->caps->name, Encoding);
+                    /* the restarted decoder needs the codec data again */
+                    if (writer->reset)
+                        writer->reset();
                     ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, true));
                     if (ret < 0) ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, false));
                     if (ret < 0)
                     {
                         linuxdvb_err("VIDEO_SET_STREAMTYPE: ERROR %d, %s\n", errno, strerror(errno));
+                        /* only logged, the decoder is restarted all the same */
+                        ret = 0;
                     }
                 }
 
+                videoRunning = true;
                 if (ioctl(videofd, VIDEO_PLAY) == -1)
                 {
                     /* konfetti: fixme: think on this, I think we should
@@ -1029,6 +1799,785 @@ audio_switch_done:
     return ret;
 }
 
+/*
+ * Tells whether the driver has a video event queued on fd (videofd, or the
+ * copy of the event thread). Not under videoInfoMutex: the Vu+ (Broadcom)
+ * driver sleeps in its poll for up to 200 ms while the decoder buffer is
+ * full, also with a timeout of 0, and the position requests of the command
+ * thread wait for that mutex.
+ */
+static bool LinuxDvbVideoEventPending(int fd)
+{
+    struct pollfd pfd[1];
+    pfd[0].fd = fd;
+    pfd[0].events = POLLPRI;
+    pfd[0].revents = 0;
+    return poll(pfd, 1, 0) > 0 && (pfd[0].revents & POLLPRI);
+}
+
+/*
+ * Reads one video event the driver has queued (LinuxDvbVideoEventPending());
+ * the caller holds videoInfoMutex. progressive is set for a progressive
+ * event, values when the events have delivered all values ("v_e"). Returns
+ * true when an event was read.
+ */
+static bool LinuxDvbReadVideoEvent(bool *progressive, bool *values)
+{
+    struct video_event evt;
+    bool changed = false;
+
+    if (ioctl(videofd, VIDEO_GET_EVENT, &evt) == -1)
+    {
+        /* the other thread has read it since the poll */
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return false;
+        linuxdvb_err("ioctl failed with errno %d\n", errno);
+        linuxdvb_err("VIDEO_GET_EVENT: %s\n", strerror(errno));
+        return false;
+    }
+
+    if (evt.type == VIDEO_EVENT_SIZE_CHANGED)
+    {
+        linuxdvb_printf(10, "VIDEO_EVENT_SIZE_CHANGED type: 0x%x\n", evt.type);
+        linuxdvb_printf(10, "width  : %d\n", evt.u.size.w);
+        linuxdvb_printf(10, "height : %d\n", evt.u.size.h);
+        linuxdvb_printf(10, "aspect : %d\n", evt.u.size.aspect_ratio);
+        videoInfo.width = evt.u.size.w;
+        videoInfo.height = evt.u.size.h;
+        videoInfo.aspect_ratio = evt.u.size.aspect_ratio;
+        changed = true;
+    }
+    else if (evt.type == VIDEO_EVENT_FRAME_RATE_CHANGED)
+    {
+        linuxdvb_printf(10, "VIDEO_EVENT_FRAME_RATE_CHANGED type: 0x%x\n", evt.type);
+        linuxdvb_printf(10, "framerate : %d\n", evt.u.frame_rate);
+        videoInfo.frame_rate = evt.u.frame_rate;
+        changed = true;
+    }
+    else if (evt.type == 16 /*VIDEO_EVENT_PROGRESSIVE_CHANGED*/)
+    {
+        linuxdvb_printf(10, "VIDEO_EVENT_PROGRESSIVE_CHANGED type: 0x%x\n", evt.type);
+        linuxdvb_printf(10, "progressive : %d\n", evt.u.frame_rate);
+        videoInfo.progressive = evt.u.frame_rate;
+        *progressive = true;
+        changed = true;
+    }
+    else
+    {
+        linuxdvb_err("unhandled DVBAPI Video Event %d\n", evt.type);
+    }
+
+    if (changed &&
+        videoInfo.width != -1 &&
+        videoInfo.height != -1 &&
+        videoInfo.aspect_ratio != -1 &&
+        videoInfo.frame_rate != -1 &&
+        videoInfo.progressive != -1)
+    {
+        *values = true;
+    }
+    return true;
+}
+
+static void LinuxDvbSendVideoEvent(const struct DVBApiVideoInfo_s *info)
+{
+    E2iSendMsg("{\"v_e\":{\"w\":%d,\"h\":%d,\"a\":%d,\"f\":%d,\"p\":%d}}\n",
+        info->width, info->height, info->aspect_ratio, info->frame_rate, info->progressive);
+}
+
+/*
+ * Asks the driver for the values no video event has delivered, the way
+ * Enigma2 does it. There is no ioctl for the progressive flag.
+ */
+static void LinuxDvbAskVideoInfo(void)
+{
+    static const struct DVBApiVideoInfo_s unknown = {-1,-1,-1,-1,-1};
+
+    videoInfoAsked = unknown;
+    if (videoInfo.width <= 0 || videoInfo.height <= 0)
+    {
+        video_size_t size;
+        memset(&size, 0, sizeof(size));
+        if (ioctl(videofd, VIDEO_GET_SIZE, &size) == -1)
+        {
+            linuxdvb_printf(10, "video info: VIDEO_GET_SIZE: %s\n", strerror(errno));
+        }
+        else if (size.w > 0 && size.h > 0)
+        {
+            videoInfoAsked.width = size.w;
+            videoInfoAsked.height = size.h;
+        }
+        else
+        {
+            linuxdvb_printf(10, "video info: VIDEO_GET_SIZE: %dx%d\n", size.w, size.h);
+        }
+    }
+
+    if (videoInfo.frame_rate <= 0)
+    {
+        unsigned int frame_rate = 0;
+        if (ioctl(videofd, VIDEO_GET_FRAME_RATE, &frame_rate) == -1)
+        {
+            linuxdvb_printf(10, "video info: VIDEO_GET_FRAME_RATE: %s\n", strerror(errno));
+        }
+        else if (frame_rate > 0 && frame_rate <= INT32_MAX)
+        {
+            videoInfoAsked.frame_rate = frame_rate;
+        }
+    }
+
+    if (videoInfo.progressive == -1)
+    {
+        FILE *file = fopen(VIDEO_PROGRESSIVE_FILE, "r");
+        if (file)
+        {
+            unsigned int progressive = 0;
+            if (fscanf(file, "%x", &progressive) == 1)
+            {
+                videoInfoAsked.progressive = progressive ? 1 : 0;
+            }
+            fclose(file);
+        }
+    }
+
+    /* -1: known from an event, so not asked, or no answer */
+    linuxdvb_printf(10, "video info asked from the decoder: %dx%d framerate %d progressive %d\n",
+                    videoInfoAsked.width, videoInfoAsked.height, videoInfoAsked.frame_rate, videoInfoAsked.progressive);
+}
+
+/*
+ * Called for every video frame of a track FFmpeg has no picture size of, or
+ * whose progressive flag no event has brought yet, and for every position
+ * request while it plays; the caller holds
+ * videoInfoMutex. event tells that a video event has been read just now,
+ * pts is the decoder PTS when the caller has read it. Returns true when the
+ * track is to be reported with the values of the decoder.
+ *
+ * The driver sends VIDEO_EVENT_SIZE_CHANGED, VIDEO_EVENT_FRAME_RATE_CHANGED
+ * and the progressive event only for a value that differs from the one of
+ * the previous playback; a decoder that showed 1280x720 before reports
+ * nothing for the next 1280x720 stream. What no event delivers has to be
+ * asked from the driver, but right after the start it still answers with the
+ * values of the previous playback, and the events of this stream follow a
+ * moment after it has been asked. So:
+ * - without an event the driver is asked after a short quiet period; that
+ *   answer is never used;
+ * - once no event has come for VIDEO_INFO_SETTLE_PTS, the values the events
+ *   left open are asked again and the track is reported once, with the final
+ *   values. Without a picture size the driver is asked again later. For a
+ *   picture FFmpeg knows only the progressive flag is used, and the track is
+ *   reported only when the driver has one.
+ * The periods are measured with the decoder PTS; the first step of it, from
+ * the value the previous playback left, does not count. A file is often
+ * written to the end before that, so the position requests of the front end
+ * go on with it.
+ */
+static bool LinuxDvbUpdateVideoInfo(bool event, const unsigned long long *knownPts)
+{
+    unsigned long long pts = 0, step = 0;
+
+    if (videoInfoPhase == VIDEO_INFO_DONE)
+    {
+        return false;
+    }
+
+    if (knownPts)
+    {
+        pts = *knownPts;
+    }
+    else if (ioctl(videofd, VIDEO_GET_PTS, (void*)&pts) == -1)
+    {
+        linuxdvb_printf(10, "video info: VIDEO_GET_PTS: %s\n", strerror(errno));
+        if (event)
+        {
+            videoInfoPhase = VIDEO_INFO_EVENTS;
+        }
+        else if (videoInfoPhase != VIDEO_INFO_EVENTS)
+        {
+            /* nothing tells when the decoder has left the previous playback */
+            videoInfoPhase = VIDEO_INFO_DONE;
+        }
+        return false;
+    }
+
+    if (videoInfoPtsSamples == 0)
+    {
+        videoInfoPtsSamples = 1;
+    }
+    else if (pts != videoInfoPts)
+    {
+        if (videoInfoPtsSamples == 1)
+        {
+            /* the step from the PTS the previous playback has left */
+            videoInfoPtsSamples = 2;
+        }
+        else if (pts > videoInfoPts && pts - videoInfoPts <= VIDEO_INFO_MAX_STEP)
+        {
+            step = pts - videoInfoPts;
+        }
+    }
+    videoInfoPts = pts;
+
+    if (event)
+    {
+        /* the period starts again with the last event */
+        videoInfoPhase = VIDEO_INFO_EVENTS;
+        videoInfoProgress = 0;
+        return false;
+    }
+    videoInfoProgress += step;
+
+    if (videoInfoPhase == VIDEO_INFO_START)
+    {
+        videoInfoPhase = VIDEO_INFO_QUIET;
+    }
+
+    if (videoInfoPhase == VIDEO_INFO_QUIET)
+    {
+        if (videoInfoProgress >= VIDEO_INFO_QUIET_PTS)
+        {
+            /* the answer can still be the previous playback; it makes the driver send its events */
+            LinuxDvbAskVideoInfo();
+            videoInfoPhase = VIDEO_INFO_HOLD;
+            videoInfoProgress = 0;
+        }
+        return false;
+    }
+
+    if (videoInfoProgress < VIDEO_INFO_SETTLE_PTS)
+    {
+        return false;
+    }
+
+    LinuxDvbAskVideoInfo();
+    videoInfoProgress = 0;
+    if (!videoInfoNoSize)
+    {
+        /* FFmpeg knows the picture: only the progressive flag was missing */
+        videoInfoPhase = VIDEO_INFO_DONE;
+        if (videoInfo.progressive != -1 || videoInfoAsked.progressive == -1)
+        {
+            return false;
+        }
+        videoInfoReported = true;
+        return true;
+    }
+    if ((videoInfo.width <= 0 || videoInfo.height <= 0) &&
+        (videoInfoAsked.width <= 0 || videoInfoAsked.height <= 0))
+    {
+        if (++videoInfoRetries < VIDEO_INFO_MAX_RETRIES)
+        {
+            return false;
+        }
+        linuxdvb_printf(10, "video info: the decoder reports no picture size\n");
+        videoInfoPhase = VIDEO_INFO_DONE;
+        return false;
+    }
+
+    videoInfoPhase = VIDEO_INFO_DONE;
+    videoInfoReported = true;
+    return true;
+}
+
+/*
+ * With -b the play thread only fills the write buffer, the buffering thread
+ * writes to the decoder. The Vu+ (Broadcom) driver sleeps in its poll for
+ * about 200 ms while the decoder buffer is full, also with a timeout of 0:
+ * the poll for a video event with every frame held the play thread to about
+ * five frames a second as long as the decoder was full, and the write buffer
+ * ran empty instead of filling up. So with -b a thread of its own polls for
+ * the video events while it plays: every VIDEO_EVENT_CHECK_MS, and at once
+ * again after an event. It reads and reports them as Write() does, also
+ * after the file has been read to the end. It polls a dup() of videofd and
+ * closes that copy itself, after its last poll: the number of a closed
+ * videofd may belong to another file by then. What follows the poll runs
+ * under eventThreadMutex, and only while the thread is not stopped: videofd
+ * and the context are valid there. The thread frees its state itself.
+ * Before the video decoder is stopped, LinuxDvbEventThreadEnd() ends the
+ * thread and waits up to VIDEO_EVENT_END_MS for it: the stop is asked for
+ * before every poll, and a stop ends the wait between two polls at once.
+ * A poll that sleeps longer in the driver (up to 5 s when a pause comes
+ * meanwhile) is not waited for; the video device is then left open.
+ */
+#ifndef VIDEO_EVENT_CHECK_MS
+#define VIDEO_EVENT_CHECK_MS 200
+#endif
+/* longer than a poll that sleeps in the driver while the decoder is full */
+#ifndef VIDEO_EVENT_END_MS
+#define VIDEO_EVENT_END_MS 500
+#endif
+typedef struct
+{
+    int fd;
+    bool stop;
+    Context_t *context;
+} VideoEventThread_t;
+static pthread_mutex_t eventThreadMutex = PTHREAD_MUTEX_INITIALIZER;
+/* on CLOCK_MONOTONIC, see LinuxDvbEventThreadInit() */
+static pthread_cond_t eventThreadCond;
+static pthread_once_t eventThreadOnce = PTHREAD_ONCE_INIT;
+static VideoEventThread_t *eventThreadState;
+static bool eventThreadPaused;
+/* no thread could be started for this open: Write() polls itself */
+static bool eventThreadFailed;
+/* the decoder is stopped: no thread is started until the close */
+static bool eventThreadEnded;
+/* threads that have not ended yet, also one a stop did not wait for */
+static int eventThreadsRunning;
+/* read without eventThreadMutex under videoInfoMutex (lock order) */
+static volatile bool eventThread;
+
+static void LinuxDvbEventThreadCondInit(void)
+{
+    pthread_condattr_t attr;
+
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&eventThreadCond, &attr);
+    pthread_condattr_destroy(&attr);
+}
+
+/* The timed waits of the thread and of its end do not follow a clock that
+ * is set while they run. Called before every use of eventThreadCond. */
+static void LinuxDvbEventThreadInit(void)
+{
+    pthread_once(&eventThreadOnce, LinuxDvbEventThreadCondInit);
+}
+
+static void LinuxDvbEventThreadDeadline(struct timespec *until, long ms)
+{
+    clock_gettime(CLOCK_MONOTONIC, until);
+    until->tv_sec += ms / 1000;
+    until->tv_nsec += (ms % 1000) * 1000000L;
+    if (until->tv_nsec >= 1000000000L)
+    {
+        until->tv_sec++;
+        until->tv_nsec -= 1000000000L;
+    }
+}
+
+/* One video event, read and reported as Write() does it; called by the
+ * event thread under eventThreadMutex. Returns true when one was read. */
+static bool LinuxDvbTakeVideoEvent(Context_t *context)
+{
+    bool progressive = false, values = false, report = false, read, noSize;
+    struct DVBApiVideoInfo_s known, now;
+
+    pthread_mutex_lock(&videoInfoMutex);
+    known = videoInfo;
+    read = LinuxDvbReadVideoEvent(&progressive, &values);
+    now = videoInfo;
+    noSize = videoInfoNoSize;
+    if (!noSize && progressive)
+    {
+        /* the flag a known picture was waiting for, or a new one */
+        videoInfoWanted = false;
+        report = true;
+    }
+    else if (videoInfoWanted)
+    {
+        report = LinuxDvbUpdateVideoInfo(memcmp(&known, &now, sizeof(known)) != 0, NULL);
+    }
+    pthread_mutex_unlock(&videoInfoMutex);
+
+    if (report)
+    {
+        context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
+    }
+    if (values)
+    {
+        LinuxDvbSendVideoEvent(&now);
+    }
+    return read;
+}
+
+static void *LinuxDvbEventThread(void *arg)
+{
+    VideoEventThread_t *state = (VideoEventThread_t *)arg;
+    bool again = false;
+
+    pthread_mutex_lock(&eventThreadMutex);
+    while (!state->stop)
+    {
+        bool pending;
+
+        if (eventThreadPaused)
+        {
+            /* nothing is decoded in a pause: no poll, no wake-up */
+            pthread_cond_wait(&eventThreadCond, &eventThreadMutex);
+            continue;
+        }
+        if (!again)
+        {
+            /* the wait between two polls, ended by a stop or a pause */
+            struct timespec until;
+            int waited = 0;
+
+            LinuxDvbEventThreadDeadline(&until, VIDEO_EVENT_CHECK_MS);
+            while (!state->stop && !eventThreadPaused && !waited)
+                waited = pthread_cond_timedwait(&eventThreadCond, &eventThreadMutex, &until);
+            if (state->stop || eventThreadPaused)
+                continue;
+        }
+        /* not stopped right before the poll; a stop that comes during it
+         * waits for its end, see LinuxDvbEventThreadEnd() */
+        pthread_mutex_unlock(&eventThreadMutex);
+        pending = LinuxDvbVideoEventPending(state->fd);
+        pthread_mutex_lock(&eventThreadMutex);
+        again = pending && !state->stop && LinuxDvbTakeVideoEvent(state->context);
+    }
+    pthread_mutex_unlock(&eventThreadMutex);
+    /* closed before the thread counts as ended: no poll runs on it now */
+    close(state->fd);
+    free(state);
+    pthread_mutex_lock(&eventThreadMutex);
+    eventThreadsRunning--;
+    pthread_cond_broadcast(&eventThreadCond);
+    pthread_mutex_unlock(&eventThreadMutex);
+    return NULL;
+}
+
+/* With -b: true when the event thread polls for the video events; started
+ * here, by the first video frame after the open. */
+static bool LinuxDvbEventThreadPolls(Context_t *context)
+{
+    bool polls;
+
+    if (!isBufferedOutput)
+        return false;
+    /* running: no wait for the mutex, which the thread holds while it reports */
+    if (eventThread)
+        return true;
+    LinuxDvbEventThreadInit();
+    pthread_mutex_lock(&eventThreadMutex);
+    if (!eventThreadState && !eventThreadFailed && !eventThreadEnded && videofd >= 0)
+    {
+        VideoEventThread_t *state = calloc(1, sizeof(*state));
+        pthread_attr_t attr;
+        pthread_t thread;
+
+        if (state)
+        {
+            state->context = context;
+            state->fd = dup(videofd);
+        }
+        if (state && state->fd >= 0 && !pthread_attr_init(&attr))
+        {
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            if (!pthread_create(&thread, &attr, LinuxDvbEventThread, state))
+            {
+                eventThreadState = state;
+                eventThreadsRunning++;
+            }
+            pthread_attr_destroy(&attr);
+        }
+        if (!eventThreadState)
+        {
+            linuxdvb_err("no video event thread (%s): the play thread polls\n", strerror(errno));
+            if (state && state->fd >= 0)
+                close(state->fd);
+            free(state);
+            eventThreadFailed = true;
+        }
+        eventThread = eventThreadState != NULL;
+    }
+    polls = eventThreadState != NULL;
+    pthread_mutex_unlock(&eventThreadMutex);
+    return polls;
+}
+
+/* A pause or stop of the video decoder ends the polls until it plays again. */
+static void LinuxDvbEventThreadPause(bool paused)
+{
+    LinuxDvbEventThreadInit();
+    pthread_mutex_lock(&eventThreadMutex);
+    eventThreadPaused = paused;
+    pthread_cond_broadcast(&eventThreadCond);
+    pthread_mutex_unlock(&eventThreadMutex);
+}
+
+/*
+ * Before the video decoder is stopped: the thread ends, and this waits up to
+ * VIDEO_EVENT_END_MS for it, so that no poll of it is in the driver when the
+ * decoder is stopped and its device closed. Until the close no thread is
+ * started again, and with -b neither Write() nor a position request polls,
+ * as while the thread ran. Returns false when a thread has not ended: then
+ * its copy of videofd is still open, and the device is not closed either.
+ */
+static bool LinuxDvbEventThreadEnd(void)
+{
+    struct timespec until;
+    int waited = 0;
+    bool ended;
+
+    LinuxDvbEventThreadInit();
+    pthread_mutex_lock(&eventThreadMutex);
+    if (eventThreadState)
+    {
+        eventThreadState->stop = true;
+        eventThreadState = NULL;
+    }
+    eventThreadEnded = true;
+    if (isBufferedOutput)
+        eventThread = true;
+    pthread_cond_broadcast(&eventThreadCond);
+    if (eventThreadsRunning > 0)
+    {
+        LinuxDvbEventThreadDeadline(&until, VIDEO_EVENT_END_MS);
+        while (eventThreadsRunning > 0 && !waited)
+            waited = pthread_cond_timedwait(&eventThreadCond, &eventThreadMutex, &until);
+    }
+    ended = eventThreadsRunning == 0;
+    pthread_mutex_unlock(&eventThreadMutex);
+    if (!ended)
+        linuxdvb_err("video event thread still in a poll of the driver after %d ms: "
+                     "the video device is left open\n", VIDEO_EVENT_END_MS);
+    return ended;
+}
+
+/* The video device is closed: the next open starts a new thread. */
+static void LinuxDvbEventThreadStop(void)
+{
+    LinuxDvbEventThreadInit();
+    pthread_mutex_lock(&eventThreadMutex);
+    if (eventThreadState)
+    {
+        eventThreadState->stop = true;
+        eventThreadState = NULL;
+        pthread_cond_broadcast(&eventThreadCond);
+    }
+    eventThread = false;
+    eventThreadFailed = false;
+    eventThreadPaused = false;
+    eventThreadEnded = false;
+    pthread_mutex_unlock(&eventThreadMutex);
+}
+
+/*
+ * The stop before the exit of a fallback of the stop signals in
+ * main/exteplayer.c (a second signal, or a stop after a signal that takes
+ * longer than STOP_SIGNAL_TIMEOUT): the process ends with _exit() right after
+ * it. The devices still open would be released by the end of the process,
+ * with their decoders running; on Broadcom boxes that path of the driver has
+ * crashed the kernel (a kill -9 during playback, an enigma2 ended by the OOM
+ * killer). So what LinuxDvbStop() and LinuxDvbClose() would do is done here,
+ * as far as it goes without waiting for a thread of the player:
+ *  - LinuxDVBmutex is only tried, every LINUXDVB_FALLBACK_RETRY_MS up to a
+ *    deadline per device; a device whose lock another thread keeps (a stop
+ *    that hangs in the driver) is left to the end of the process, as before;
+ *  - a device closed already (fd -1) is not touched; one that LinuxDvbStop()
+ *    has left open (a thread still in the driver) is stopped, not closed;
+ *  - the video device only after the event thread has ended, as in
+ *    LinuxDvbStop(); while it still polls, the device is left alone;
+ *  - the close is a dup2() of /dev/null onto the number: the device is
+ *    released, and a thread that uses the number afterwards (a write of the
+ *    play or buffering thread, a position request) reaches /dev/null, never
+ *    a file opened meanwhile under the same number. The fd is set to -1
+ *    under the lock: no close follows.
+ * The work runs in a thread of its own; LinuxDvbFallbackStop() waits for it
+ * at most LINUXDVB_FALLBACK_STOP_MS, also when an ioctl of it does not return.
+ */
+#ifndef LINUXDVB_FALLBACK_STOP_MS
+#define LINUXDVB_FALLBACK_STOP_MS 1000
+#endif
+#define LINUXDVB_FALLBACK_RETRY_MS 10
+/* deadlines of the lock from the start of the work: the audio device first,
+ * the video device after the end of the event thread (VIDEO_EVENT_END_MS) */
+#define LINUXDVB_FALLBACK_AUDIO_LOCK_MS 250
+#define LINUXDVB_FALLBACK_VIDEO_LOCK_MS 700
+
+static pthread_mutex_t fallbackMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t fallbackCond;
+static pthread_once_t fallbackOnce = PTHREAD_ONCE_INIT;
+static bool fallbackStarted;
+static int fallbackResult = -1;
+
+static void LinuxDvbFallbackCondInit(void)
+{
+    pthread_condattr_t attr;
+
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&fallbackCond, &attr);
+    pthread_condattr_destroy(&attr);
+}
+
+static bool LinuxDvbFallbackLock(const struct timespec *start, long deadline_ms)
+{
+    for (;;)
+    {
+        if (!pthread_mutex_trylock(&LinuxDVBmutex))
+            return true;
+        if (LinuxDvbElapsedMs(start) >= deadline_ms)
+            return false;
+        usleep(LINUXDVB_FALLBACK_RETRY_MS * 1000);
+    }
+}
+
+/* The caller owns LinuxDVBmutex, *fd is open. */
+static bool LinuxDvbFallbackRelease(int *fd, bool leftOpen)
+{
+    int devnull;
+
+    if (leftOpen)
+        return false;
+    devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (devnull < 0)
+        return false;
+    if (dup2(devnull, *fd) < 0)
+    {
+        close(devnull);
+        return false;
+    }
+    close(devnull);
+    *fd = -1;
+    return true;
+}
+
+static int LinuxDvbFallbackWork(void)
+{
+    struct timespec start;
+    int found = 0, skipped = 0;
+    bool videoOpen = false;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    if (LinuxDvbFallbackLock(&start, LINUXDVB_FALLBACK_AUDIO_LOCK_MS))
+    {
+        if (audiofd != -1)
+        {
+            found++;
+            LinuxDvbStopAudioLocked();
+            if (!LinuxDvbFallbackRelease(&audiofd, audioLeftOpen))
+                skipped++;
+        }
+        releaseLinuxDVBMutex();
+    }
+    else
+        skipped++;
+
+    if (LinuxDvbFallbackLock(&start, LINUXDVB_FALLBACK_VIDEO_LOCK_MS))
+    {
+        videoOpen = videofd != -1;
+        releaseLinuxDVBMutex();
+    }
+    else
+        skipped++;
+    if (videoOpen)
+    {
+        found++;
+        if (!LinuxDvbEventThreadEnd())
+            skipped++;
+        else if (LinuxDvbFallbackLock(&start, LINUXDVB_FALLBACK_VIDEO_LOCK_MS))
+        {
+            if (videofd != -1)
+            {
+                LinuxDvbStopVideoLocked();
+                if (!LinuxDvbFallbackRelease(&videofd, videoLeftOpen))
+                    skipped++;
+            }
+            releaseLinuxDVBMutex();
+        }
+        else
+            skipped++;
+    }
+
+    if (skipped)
+        return LINUXDVB_FALLBACK_PARTIAL;
+    return found ? LINUXDVB_FALLBACK_DONE : LINUXDVB_FALLBACK_NOTHING;
+}
+
+static void *LinuxDvbFallbackThread(void *arg)
+{
+    int result = LinuxDvbFallbackWork();
+
+    (void)arg;
+    pthread_mutex_lock(&fallbackMutex);
+    fallbackResult = result;
+    pthread_cond_broadcast(&fallbackCond);
+    pthread_mutex_unlock(&fallbackMutex);
+    return NULL;
+}
+
+/* Returns one of LINUXDVB_FALLBACK_*; the process is expected to end after
+ * it (the devices are not usable any more). */
+int LinuxDvbFallbackStop(void)
+{
+    struct timespec until;
+    int waited = 0, result;
+
+    pthread_once(&fallbackOnce, LinuxDvbFallbackCondInit);
+    pthread_mutex_lock(&fallbackMutex);
+    if (!fallbackStarted)
+    {
+        pthread_attr_t attr;
+        pthread_t thread;
+
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        fallbackStarted = !pthread_create(&thread, &attr, LinuxDvbFallbackThread, NULL);
+        pthread_attr_destroy(&attr);
+        if (!fallbackStarted)
+        {
+            pthread_mutex_unlock(&fallbackMutex);
+            return LINUXDVB_FALLBACK_NOT_STARTED;
+        }
+    }
+    LinuxDvbEventThreadDeadline(&until, LINUXDVB_FALLBACK_STOP_MS);
+    while (fallbackResult < 0 && !waited)
+        waited = pthread_cond_timedwait(&fallbackCond, &fallbackMutex, &until);
+    result = fallbackResult < 0 ? LINUXDVB_FALLBACK_TIMEOUT : fallbackResult;
+    pthread_mutex_unlock(&fallbackMutex);
+    return result;
+}
+
+/*
+ * A position request: for a track without a picture size or progressive flag
+ * the video events are read and the periods go on, also when no more data is
+ * written.
+ */
+static void LinuxDvbVideoInfoPoll(Context_t *context, unsigned long long pts)
+{
+    bool progressive = false, values = false, report = false, event = false;
+    struct DVBApiVideoInfo_s known, now;
+    int i;
+
+    pthread_mutex_lock(&videoInfoMutex);
+    if (!videoInfoWanted || videoInfoPhase == VIDEO_INFO_DONE)
+    {
+        pthread_mutex_unlock(&videoInfoMutex);
+        return;
+    }
+    known = videoInfo;
+    /* with -b the event thread reads them: no poll that may sleep in the driver here */
+    for (i = 0; i < 8 && !eventThread && LinuxDvbVideoEventPending(videofd) &&
+                LinuxDvbReadVideoEvent(&progressive, &values); i++)
+    {
+    }
+    now = videoInfo;
+    event = memcmp(&known, &now, sizeof(known)) != 0;
+    if (!videoInfoNoSize && progressive)
+    {
+        /* the event has brought the flag a known picture was waiting for */
+        videoInfoWanted = false;
+        report = true;
+    }
+    else
+    {
+        report = LinuxDvbUpdateVideoInfo(event, &pts);
+    }
+    pthread_mutex_unlock(&videoInfoMutex);
+
+    if (report)
+    {
+        context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
+    }
+    if (values)
+    {
+        LinuxDvbSendVideoEvent(&now);
+    }
+}
+
 static int Write(void  *_context, void *_out)
 {
     Context_t          *context  = (Context_t  *) _context;
@@ -1045,15 +2594,15 @@ static int Write(void  *_context, void *_out)
        linuxdvb_err("null pointer passed\n");
        return cERR_LINUXDVB_ERROR;
     }
-
+    
     video = !strcmp("video", out->type);
     audio = !strcmp("audio", out->type);
-
-    linuxdvb_printf(20, "DataLength=%u PrivateLength=%u Pts=%"PRIu64" FrameRate=%d\n",
+  
+    linuxdvb_printf(20, "DataLength=%u PrivateLength=%u Pts=%"PRIu64" FrameRate=%d\n", 
                                                     out->len, out->extralen, out->pts, out->frameRate);
     linuxdvb_printf(20, "v%d a%d\n", video, audio);
 
-    if (video)
+    if (video) 
     {
         char *Encoding = NULL;
         context->manager->video->Command(context, MANAGER_GETENCODING, &Encoding);
@@ -1072,66 +2621,45 @@ static int Write(void  *_context, void *_out)
         {
             linuxdvb_err("unknown video codec and no default writer %s\n",Encoding);
             ret = cERR_LINUXDVB_ERROR;
-        }
+        } 
         else
         {
-            struct pollfd pfd[1];
-            pfd[0].fd = videofd;
-            pfd[0].events = POLLPRI;
-            int pollret = poll(pfd, 1, 0);
-            if (pollret > 0 && pfd[0].revents & POLLPRI)
-            {
-                struct video_event evt;
-                if (ioctl(videofd, VIDEO_GET_EVENT, &evt) == -1)
-                {
-                    linuxdvb_err("ioctl failed with errno %d\n", errno);
-                    linuxdvb_err("VIDEO_GET_EVENT: %s\n", strerror(errno));
-                }
-                else
-                {
-                    bool changed = false;
-                    if (evt.type == VIDEO_EVENT_SIZE_CHANGED)
-                    {
-                        linuxdvb_printf(10, "VIDEO_EVENT_SIZE_CHANGED type: 0x%x\n", evt.type);
-                        linuxdvb_printf(10, "width  : %d\n", evt.u.size.w);
-                        linuxdvb_printf(10, "height : %d\n", evt.u.size.h);
-                        linuxdvb_printf(10, "aspect : %d\n", evt.u.size.aspect_ratio);
-                        videoInfo.width = evt.u.size.w;
-                        videoInfo.height = evt.u.size.h;
-                        videoInfo.aspect_ratio = evt.u.size.aspect_ratio;
-                        changed = true;
-                    }
-                    else if (evt.type == VIDEO_EVENT_FRAME_RATE_CHANGED)
-                    {
-                        linuxdvb_printf(10, "VIDEO_EVENT_FRAME_RATE_CHANGED type: 0x%x\n", evt.type);
-                        linuxdvb_printf(10, "framerate : %d\n", evt.u.frame_rate);
-                        videoInfo.frame_rate = evt.u.frame_rate;
-                        changed = true;
-                    }
-                    else if (evt.type == 16 /*VIDEO_EVENT_PROGRESSIVE_CHANGED*/)
-                    {
-                        linuxdvb_printf(10, "VIDEO_EVENT_PROGRESSIVE_CHANGED type: 0x%x\n", evt.type);
-                        linuxdvb_printf(10, "progressive : %d\n", evt.u.frame_rate);
-                        videoInfo.progressive = evt.u.frame_rate;
-                        context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
-                        changed = true;
-                    }
-                    else
-                    {
-                        linuxdvb_err("unhandled DVBAPI Video Event %d\n", evt.type);
-                    }
+            /* FFmpeg has no picture size: the decoder's values complete the track */
+            bool complete = out->width == 0 || out->height == 0;
+            bool progressive = false, values = false, report = false;
+            struct DVBApiVideoInfo_s known, now;
+            /* Before the mutex: the driver may sleep in its poll, see there.
+             * With -b the event thread polls, see LinuxDvbEventThread(). */
+            bool threadPolls = LinuxDvbEventThreadPolls(context);
+            bool pending = !threadPolls && LinuxDvbVideoEventPending(videofd);
 
-                    if (changed &&
-                        videoInfo.width != -1 &&
-                        videoInfo.height != -1 &&
-                        videoInfo.aspect_ratio != -1 &&
-                        videoInfo.frame_rate != -1 &&
-                        videoInfo.progressive != -1)
-                    {
-                        E2iSendMsg("{\"v_e\":{\"w\":%d,\"h\":%d,\"a\":%d,\"f\":%d,\"p\":%d}}\n",
-                            videoInfo.width, videoInfo.height, videoInfo.aspect_ratio, videoInfo.frame_rate, videoInfo.progressive);
-                    }
-                }
+            pthread_mutex_lock(&videoInfoMutex);
+            known = videoInfo;
+            if (pending)
+                LinuxDvbReadVideoEvent(&progressive, &values);
+            now = videoInfo;
+            /* a known picture still waits for the progressive flag */
+            videoInfoNoSize = complete;
+            videoInfoWanted = complete || videoInfo.progressive == -1;
+            if (videoInfoWanted)
+            {
+                report = LinuxDvbUpdateVideoInfo(memcmp(&known, &now, sizeof(known)) != 0, NULL);
+            }
+            pthread_mutex_unlock(&videoInfoMutex);
+
+            /*
+             * A track without a picture size is reported once, after the
+             * last event, also for a progressive event. A track with one is
+             * reported for a progressive event, or once with the flag the
+             * decoder shows when no event brings it.
+             */
+            if ((progressive && !complete) || report)
+            {
+                context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
+            }
+            if (values)
+            {
+                LinuxDvbSendVideoEvent(&now);
             }
 
             call.fd           = videofd;
@@ -1160,6 +2688,14 @@ static int Write(void  *_context, void *_out)
                 linuxdvb_err("%s\n", strerror(errno));
                 ret = cERR_LINUXDVB_ERROR;
             }
+            else
+            {
+                PosBoundWritten(&videoPosBound, out->pts);
+                if (res > 0 && call.Pts != 0 && call.Pts != INVALID_PTS_VALUE)
+                {
+                    videoPtsWritten = 1;
+                }
+            }
         }
 
         free(Encoding);
@@ -1183,7 +2719,7 @@ static int Write(void  *_context, void *_out)
         {
             linuxdvb_err("unknown audio codec %s and no default writer\n",Encoding);
             ret = cERR_LINUXDVB_ERROR;
-        }
+        } 
         else
         {
             call.fd             = audiofd;
@@ -1199,13 +2735,23 @@ static int Write(void  *_context, void *_out)
             call.Version        = 0;
             call.WriteV         = isBufferedOutput ? BufferingWriteV : writev_with_retry;
 
+            if (dts_hd_pending && AUDIOTYPE_DTS == writer->caps->dvbStreamType)
+                LinuxDvbDtsHdStart(context, out->data, out->len);
+
             if (writer->writeData)
             {
                 res = writer->writeData(&call);
             }
 
-            if (res >= 0 && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
+            if (res >= 0)
             {
+                PosBoundWritten(&audioPosBound, out->pts);
+            }
+
+            if (1 == eac3Restart && res >= 0 && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
+            {
+                /* the delay counts from the first DD+ packet */
+                clock_gettime(CLOCK_MONOTONIC, &eac3PacketTime);
                 __sync_bool_compare_and_swap(&eac3Restart, 1, 2);
             }
 
@@ -1228,52 +2774,44 @@ static int Write(void  *_context, void *_out)
     return ret;
 }
 
-static int reset(Context_t  *context)
+/* Every command arrives once per type ("video", "audio"): reset the writer
+ * of that type only. */
+static int reset(Context_t  *context, char *type)
 {
     int ret = cERR_LINUXDVB_NO_ERROR;
     Writer_t*   writer;
     char * Encoding = NULL;
+    uint8_t video = !strcmp("video", type);
 
-    context->manager->video->Command(context, MANAGER_GETENCODING, &Encoding);
-
-    writer = getWriter(Encoding);
-
-    if (writer == NULL)
-    {
-        linuxdvb_err("unknown video codec %s\n",Encoding);
-        ret = cERR_LINUXDVB_ERROR;
-    } else
-    {
-        writer->reset();
-    }
-
-    free(Encoding);
-
-    context->manager->audio->Command(context, MANAGER_GETENCODING, &Encoding);
+    if (video)
+        context->manager->video->Command(context, MANAGER_GETENCODING, &Encoding);
+    else
+        context->manager->audio->Command(context, MANAGER_GETENCODING, &Encoding);
 
     writer = getWriter(Encoding);
 
     if (writer == NULL)
     {
-        linuxdvb_err("unknown video codec %s\n",Encoding);
+        linuxdvb_err("unknown %s codec %s\n", video ? "video" : "audio", Encoding);
         ret = cERR_LINUXDVB_ERROR;
     } else
     {
-        writer->reset();
+        if (writer->reset)
+            writer->reset();
     }
 
     free(Encoding);
 
     if (isBufferedOutput)
         LinuxDvbBuffFlush(context);
-
+    
     return ret;
 }
 
 static int Command(void  *_context, OutputCmd_t command, void * argument) {
     Context_t* context = (Context_t*) _context;
     int ret = cERR_LINUXDVB_NO_ERROR;
-
+    
     linuxdvb_printf(50, "Command %d\n", command);
 
     switch(command) {
@@ -1283,33 +2821,49 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     }
     case OUTPUT_CLOSE: {
         ret = LinuxDvbClose(context, (char*)argument);
-        reset(context);
+        reset(context, (char*)argument);
+        PosBoundReset((char*)argument);
         sCURRENT_PTS = 0;
+        videoPtsWritten = 0;
         break;
     }
     case OUTPUT_PLAY: {	// 4
+        PosBoundStart((char*)argument);
         sCURRENT_PTS = 0;
+        videoPtsWritten = 0;
         ret = LinuxDvbPlay(context, (char*)argument);
+        if (!strcmp("video", (char*)argument))
+            LinuxDvbEventThreadPause(false);
         break;
     }
     case OUTPUT_STOP: {
-        reset(context);
+        reset(context, (char*)argument);
         ret = LinuxDvbStop(context, (char*)argument);
+        if (!strcmp("video", (char*)argument))
+            LinuxDvbEventThreadPause(true);
+        PosBoundReset((char*)argument);
         sCURRENT_PTS = 0;
+        videoPtsWritten = 0;
         break;
     }
     case OUTPUT_FLUSH: {
         ret = LinuxDvbFlush(context, (char*)argument);
-        reset(context);
+        reset(context, (char*)argument);
+        PosBoundReset((char*)argument);
         sCURRENT_PTS = 0;
+        videoPtsWritten = 0;
         break;
     }
     case OUTPUT_PAUSE: {
         ret = LinuxDvbPause(context, (char*)argument);
+        if (!strcmp("video", (char*)argument))
+            LinuxDvbEventThreadPause(true);
         break;
     }
     case OUTPUT_CONTINUE: {
         ret = LinuxDvbContinue(context, (char*)argument);
+        if (!strcmp("video", (char*)argument))
+            LinuxDvbEventThreadPause(false);
         break;
     }
     case OUTPUT_AVSYNC: {
@@ -1317,10 +2871,12 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_CLEAR: {
-        reset(context);
+        reset(context, (char*)argument);
         ret = LinuxDvbClear(context, (char*)argument);
-        reset(context);
+        reset(context, (char*)argument);
+        PosBoundReset((char*)argument);
         sCURRENT_PTS = 0;
+        videoPtsWritten = 0;
         break;
     }
     case OUTPUT_PTS: {
@@ -1330,16 +2886,19 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_SWITCH: {
+        /* a switch is the restart the DD+ start was waiting for */
+        if (!strcmp("audio", (char*)argument))
+            eac3Restart = 0;
         ret = LinuxDvbSwitch(context, (char*)argument);
+        /* the decoder starts again with the data written after the switch */
+        PosBoundRestart((char*)argument);
         break;
     }
     case OUTPUT_SLOWMOTION: {
         return LinuxDvbSlowMotion(context, (char*)argument);
-        break;
     }
     case OUTPUT_AUDIOMUTE: {
         return LinuxDvbAudioMute(context, (char*)argument);
-        break;
     }
     case OUTPUT_GET_FRAME_COUNT: {
         unsigned long long int frameCount = 0;
@@ -1348,8 +2907,42 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_GET_PROGRESSIVE: {
+        int progressive;
         ret = cERR_LINUXDVB_NO_ERROR;
-        *((int*)argument) = videoInfo.progressive;
+        pthread_mutex_lock(&videoInfoMutex);
+        progressive = videoInfo.progressive;
+        /* no event brought it: the flag the decoder showed once it had settled */
+        if (progressive == -1 && videoInfoReported)
+            progressive = videoInfoAsked.progressive;
+        pthread_mutex_unlock(&videoInfoMutex);
+        *((int*)argument) = progressive;
+        break;
+    }
+    case OUTPUT_GET_VIDEO_INFO: {
+        TrackDescription_t *track = (TrackDescription_t*)argument;
+        ret = cERR_LINUXDVB_NO_ERROR;
+        pthread_mutex_lock(&videoInfoMutex);
+        if ((track->width <= 0 || track->height <= 0) && videoInfoReported)
+        {
+            /* FFmpeg did not see a picture: its frame rate is a guess too */
+            if (videoInfo.width > 0 && videoInfo.height > 0)
+            {
+                track->width  = videoInfo.width;
+                track->height = videoInfo.height;
+            }
+            else if (videoInfoAsked.width > 0 && videoInfoAsked.height > 0)
+            {
+                track->width  = videoInfoAsked.width;
+                track->height = videoInfoAsked.height;
+            }
+            if (videoInfo.frame_rate > 0)
+                track->frame_rate = videoInfo.frame_rate;
+            else if (videoInfoAsked.frame_rate > 0)
+                track->frame_rate = videoInfoAsked.frame_rate;
+            if (track->progressive == -1)
+                track->progressive = videoInfoAsked.progressive;
+        }
+        pthread_mutex_unlock(&videoInfoMutex);
         break;
     }
     case OUTPUT_SET_BUFFER_SIZE: {
@@ -1369,6 +2962,21 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     case OUTPUT_GET_BUFFER_SIZE: {
         ret = cERR_LINUXDVB_NO_ERROR;
         *((uint32_t*)argument) = LinuxDvbBuffGetSize();
+        break;
+    }
+    case OUTPUT_AUDIO_CHANNEL: {
+        int channel = *((int*)argument);
+        if (channel < OUTPUT_AUDIO_CHANNEL_LEFT || channel > OUTPUT_AUDIO_CHANNEL_RIGHT)
+        {
+            ret = cERR_LINUXDVB_ERROR;
+            break;
+        }
+        getLinuxDVBMutex();
+        /* kept also when the driver refuses it: the decoder starts try again */
+        audioChannel = channel;
+        /* before the audio device is open the start of the decoder sets it */
+        ret = audiofd != -1 ? LinuxDvbSetAudioChannel(channel) : cERR_LINUXDVB_NO_ERROR;
+        releaseLinuxDVBMutex();
         break;
     }
     default:

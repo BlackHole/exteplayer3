@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HEVC_HDR_MAX_ES_BYTES  (8U * 1024U * 1024U)
+#define HEVC_HDR_MAX_ES_BYTES  (2U * 1024U * 1024U)
 #define HEVC_HDR_CLASSIFY_STEP (64U * 1024U)
 #define HEVC_HDR_SDR_COMMIT    (768U * 1024U)
 #define HEVC_HDR_INITIAL_CAP   (512U * 1024U)
@@ -273,6 +273,8 @@ static int sps_transfer(const uint8_t *rbsp, size_t length)
         uint32_t index;
         if (count > 32)
             count = 32;
+        if (log2_poc > 12)
+            goto out;
         for (index = 0; index < count && !bit_reader_exhausted(&reader); ++index) {
             bit_reader_u(&reader, (int)log2_poc + 4);
             bit_reader_u(&reader, 1);
@@ -384,9 +386,11 @@ int hevc_hdr_classify(const uint8_t *buffer, size_t length, int *saw_sps)
             int nal_type = (buffer[nal_start] >> 1) & 0x3f;
             size_t payload = nal_start + 2;
             size_t next = payload;
-            while (next + 3 < length &&
+            while (next + 2 < length &&
                    !(buffer[next] == 0 && buffer[next + 1] == 0 && buffer[next + 2] == 1))
                 ++next;
+            if (next + 2 >= length)
+                next = length; /* the last NAL unit runs to the end */
             if (next > payload) {
                 size_t payload_length = next - payload;
                 if (nal_type == 33) {
@@ -475,6 +479,19 @@ static int detector_append_nal(HevcHdrDetector *detector, const uint8_t *nal, si
            detector_append(detector, nal, length);
 }
 
+/* The result is final: the collected stream is not needed any more. */
+static int detector_finish(HevcHdrDetector *detector, int result)
+{
+    free(detector->buffer);
+    detector->buffer = NULL;
+    detector->size = 0;
+    detector->capacity = 0;
+    detector->last_classify = 0;
+    detector->result = result;
+    detector->done = 1;
+    return 1;
+}
+
 static int detector_evaluate(HevcHdrDetector *detector, int force)
 {
     int saw_sps = 0;
@@ -486,27 +503,24 @@ static int detector_evaluate(HevcHdrDetector *detector, int force)
         detector->size - detector->last_classify < HEVC_HDR_CLASSIFY_STEP)
         return 0;
 
+    /* only the bytes added since the last pass: the earlier ones were SDR so
+     * far, and every append is whole NAL units, so this is a NAL boundary */
+    result = hevc_hdr_classify(detector->buffer + detector->last_classify,
+                               detector->size - detector->last_classify, &saw_sps);
     detector->last_classify = detector->size;
-    result = hevc_hdr_classify(detector->buffer, detector->size, &saw_sps);
-    if (result != HEVC_HDR_SDR) {
-        detector->result = result;
-        detector->done = 1;
-        return 1;
-    }
-    if (saw_sps) {
-        if (!detector->first_sps_at)
-            detector->first_sps_at = detector->size;
-        if (detector->size - detector->first_sps_at >= HEVC_HDR_SDR_COMMIT) {
-            detector->result = HEVC_HDR_SDR;
-            detector->done = 1;
-            return 1;
-        }
-    }
-    if (detector->size >= HEVC_HDR_MAX_ES_BYTES) {
-        detector->result = HEVC_HDR_SDR;
-        detector->done = 1;
-        return 1;
-    }
+    if (result == HEVC_HDR_HDR10 || result == HEVC_HDR_HLG)
+        return detector_finish(detector, result);
+    /* A BT.2020 VUI is not the last word: backwards compatible HLG signals
+     * transfer 14 there and 18 in an alternative transfer SEI, which is not
+     * part of the extradata. Report it and keep looking. */
+    if (result == HEVC_HDR_GENERIC)
+        detector->result = HEVC_HDR_GENERIC;
+    if (saw_sps && !detector->first_sps_at)
+        detector->first_sps_at = detector->size;
+    if ((detector->first_sps_at &&
+         detector->size - detector->first_sps_at >= HEVC_HDR_SDR_COMMIT) ||
+        detector->size >= HEVC_HDR_MAX_ES_BYTES)
+        return detector_finish(detector, detector->result >= 0 ? detector->result : HEVC_HDR_SDR);
     return 0;
 }
 

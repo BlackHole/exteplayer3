@@ -1,84 +1,1884 @@
-# exteplayer3
-Core of movie player for E2 based on the libeplayer using the ffmpeg solution
+<h1 align="center">exteplayer3</h1>
+<p align="center">Core of movie player for E2 based on the libeplayer using the ffmpeg solution</p>
 
-[![Build](https://github.com/oe-alliance/exteplayer3/actions/workflows/build.yml/badge.svg)](https://github.com/oe-alliance/exteplayer3/actions/workflows/build.yml)
+<p align="center">
+  <a href="https://github.com/skyjet18/exteplayer3"><img alt="Repository size" src="https://img.shields.io/github/repo-size/skyjet18/exteplayer3.svg"></a>
+  <a href="https://visitorbadge.io/status?path=https://github.com/skyjet18/exteplayer3"><img alt="Views" src="https://api.visitorbadge.io/api/visitors?path=https://github.com/skyjet18/exteplayer3&label=Views&countColor=blue&style=flat"></a>
+  <a href="https://visitorbadge.io/status?path=https://github.com/skyjet18/exteplayer3"><img alt="Visitors today" src="https://api.visitorbadge.io/api/daily?path=https://github.com/skyjet18/exteplayer3&label=Visitors%20Today&countColor=blue&style=flat"></a>
+</p>
 
+<div align="center">
+<table>
+  <tr>
+    <td><b>🏗️ Build</b></td>
+    <td>
+      <a href="https://github.com/skyjet18/exteplayer3/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/skyjet18/exteplayer3/actions/workflows/tests.yml/badge.svg"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/actions/workflows/static-analysis.yml"><img alt="Static analysis" src="https://github.com/skyjet18/exteplayer3/actions/workflows/static-analysis.yml/badge.svg"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/actions/workflows/sonarcloud.yml"><img alt="SonarCloud" src="https://github.com/skyjet18/exteplayer3/actions/workflows/sonarcloud.yml/badge.svg"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/actions/workflows/ipk-release.yml"><img alt="ipk release" src="https://github.com/skyjet18/exteplayer3/actions/workflows/ipk-release.yml/badge.svg"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>🔍 Code quality</b></td>
+    <td>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Quality Gate" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=alert_status"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Reliability" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=reliability_rating"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Security" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=security_rating"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Maintainability" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=sqale_rating"></a>
+      <br>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Bugs" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=bugs"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Vulnerabilities" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=vulnerabilities"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Code smells" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=code_smells"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Duplicated lines" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=duplicated_lines_density"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Lines of code" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=ncloc"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>📦 Releases</b></td>
+    <td>
+      <a href="https://github.com/skyjet18/exteplayer3/tags"><img alt="Latest version" src="https://img.shields.io/github/v/tag/skyjet18/exteplayer3?filter=v*&label=Latest%20version&color=darkviolet"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/releases/latest"><img alt="Release date" src="https://img.shields.io/github/release-date/skyjet18/exteplayer3?label=From&color=darkviolet"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/skyjet18/exteplayer3/total.svg?label=Downloads"></a>
+      <a href="https://github.com/skyjet18/FFmpeg"><img alt="FFmpeg" src="https://img.shields.io/badge/FFmpeg-6.1%20%7C%209.0-darkgreen.svg"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>📈 Activity</b></td>
+    <td>
+      <a href="https://github.com/skyjet18/exteplayer3/commits"><img alt="Last commit" src="https://img.shields.io/github/last-commit/skyjet18/exteplayer3"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/commits"><img alt="Commits per year" src="https://img.shields.io/github/commit-activity/y/skyjet18/exteplayer3.svg?label=commits%2Fyear"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/commits"><img alt="Commits per month" src="https://img.shields.io/github/commit-activity/m/skyjet18/exteplayer3.svg?label=commits%2Fmonth"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/commits"><img alt="Commits per week" src="https://img.shields.io/github/commit-activity/w/skyjet18/exteplayer3.svg?label=commits%2Fweek"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/graphs/contributors"><img alt="Contributors" src="https://img.shields.io/github/contributors/skyjet18/exteplayer3?style=flat"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>🤝 Community</b></td>
+    <td>
+      <a href="https://github.com/skyjet18/exteplayer3/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/skyjet18/exteplayer3?style=flat"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/forks"><img alt="Forks" src="https://img.shields.io/github/forks/skyjet18/exteplayer3?style=flat"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/issues"><img alt="Issues" src="https://img.shields.io/github/issues/skyjet18/exteplayer3?color=blue&style=flat"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/pulls"><img alt="Pull requests welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>🧾 Project</b></td>
+    <td>
+      <a href="#-license"><img alt="License GPL-2.0-or-later" src="https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg"></a>
+      <img alt="Platform Enigma2" src="https://img.shields.io/badge/Platform-Enigma2-orange.svg">
+      <img alt="Top language" src="https://img.shields.io/github/languages/top/skyjet18/exteplayer3?style=flat">
+      <img alt="Architectures" src="https://img.shields.io/badge/arch-ARMv7%20%7C%20MIPS%20%7C%20AArch64%20%7C%20SH4-lightgrey.svg">
+    </td>
+  </tr>
+</table>
+</div>
 
-## SonarCloud status
-[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=oe-alliance_exteplayer3&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=oe-alliance_exteplayer3)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=oe-alliance_exteplayer3&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=oe-alliance_exteplayer3)
-[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=oe-alliance_exteplayer3&metric=bugs)](https://sonarcloud.io/summary/new_code?id=oe-alliance_exteplayer3)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=oe-alliance_exteplayer3&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=oe-alliance_exteplayer3)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=oe-alliance_exteplayer3&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=oe-alliance_exteplayer3)
+# Documentation
 
-## Version 186
+## 📑 Contents
 
-Integrated from [skyjet18/exteplayer3](https://github.com/skyjet18/exteplayer3/tree/13c7679) (v185 to v186): bug fixes in
-the container, PTS clock, subtitles, buffering, progressive playback and the H.264, H.265, VP9,
-VC-1/WMV, AAC, PCM and Vorbis writers, JSON escaping of track names and subtitles, xHE-AAC
-software decoding and full HLS probing over the network.
+- [Adaptive playback and metadata](#-adaptive-playback-and-metadata)
+- [FFmpeg companions](#-ffmpeg-companions): [HTTP input](#-http-input-hls-options-and-stall-limits),
+  [HTTPS CA certificates](#-https-ca-certificates)
+- [Video track for enigma2](#-video-track-for-enigma2)
+- [Optional decoded PCM export](#-optional-decoded-pcm-export)
+- [Start position](#-start-position)
+- [Embedded cover](#-embedded-cover)
+- [Chapters](#-chapters)
+- [Optional audio transcoding](#-optional-audio-transcoding)
+- [CENC keys per KID](#-cenc-keys-per-kid)
+- [DreamNextGen build (Dreambox One/Two)](#dreamnextgen-build-dreambox-onetwo)
+- [Native validation](#-native-validation)
+- [DD+ passthrough restart on VU+ Ultimo 4K and Duo 4K SE](#-dd-passthrough-restart-on-vu-ultimo-4k-and-duo-4k-se)
+- [Backport provenance and exclusions](#-backport-provenance-and-exclusions)
+- [Stop on signals and on the end of the parent](#-stop-on-signals-and-on-the-end-of-the-parent)
+- [HiSilicon receivers](#-hisilicon-receivers)
+- [Receiver validation still required](#-receiver-validation-still-required)
+- Reference: [command line](#-command-line-options), [stdin commands](#-stdin-commands),
+  [JSON messages](#-json-messages), [environment variables](#-environment-variables),
+  [build-time settings](#-build-time-settings), [exit codes](#-exit-codes)
+- [License](#-license)
+- [Credits](#-credits)
 
-A new resampler is set up when decoded audio changes its channels, sample rate or format (5.1 to
-stereo at a programme change). In OpenBH this also covers the DTS/TrueHD to AC3/E-AC3 and HE-AAC
-to AAC-LC transcoders, which otherwise stopped (or crashed) at such a change.
+---
 
-## Version 185
+## 📺 Adaptive playback and metadata
 
-Integrated from [skyjet18/exteplayer3](https://github.com/skyjet18/exteplayer3/tree/3e87bef42b8d233ae11d0527548308b84a6d2a2b), retaining the OE Alliance Autotools build and the OpenBH audio codec, audio channel,
-transcoding, HDR and Atmos detection changes.
+- `-Q 0|1|2`: Auto (default, highest advertised bandwidth), lowest, or highest
+  HLS/DASH quality. This selects a representation; it is not bandwidth-adaptive
+  switching during playback.
+- `-D 0|1`: retain all HLS audio renditions (default), or prefer default audio.
+  Groups without a default retain their available tracks.
+- DASH start audio track: the DASH demuxer exports every audio representation
+  as a track of its own, in manifest order. Without `-t` the player no longer
+  starts with the first one but with the best one of the same language as the
+  first (the language stays the choice of the front end), close to
+  `av_find_best_stream()`: first the disposition (not hearing/visually
+  impaired, then default), then a track the decoder of the box takes over one
+  decoded to PCM or transcoded by the player (software decoding/transcoding
+  options of the codec), then more channels (compared only when both are
+  known), then the higher bandwidth of the manifest (else the codec bit
+  rate). The software decoder comes before the channels because its PCM
+  reaches HDMI as PCM 2.0 on Vu+ boxes: a 5.1 track decoded in software
+  (AC-4, E-AC-3 with `-e`) brings no surround there, only CPU load, so stereo
+  AAC or a 5.1 AC-3/E-AC-3 bitstream to the decoder is preferred.
+  With `-Q 1` (lowest) fewer channels and less bandwidth win. `-P`, an
+  `audio_rep_index` (`-1`, `&1=` after `.mpd`) and a track chosen with `-t`
+  or `ai` always win. HLS keeps its `DEFAULT=YES` rule, files and TS keep the
+  first track. `-L FFMPEG_DEBUG_LEVEL:1` logs a choice other than the first.
+- `EP3_H264_LEVEL41=0|1`: H.264 SPS level limit. On MIPS builds a `level_idc`
+  above 4.1 in the SPS taken from `avcC` (baseline, main, extended and high
+  profile) is written to the decoder as 4.1, as every version before 185 did;
+  the limit was made for the MIPS Broadcom decoders. ARM and other builds pass
+  the level on unchanged, as in 185. `1` applies the limit and `0` disables it
+  on any CPU; unset or empty keeps the build default, which
+  `-DH264_LEVEL41_DEFAULT=0|1` can set at compile time. Parameter sets inside
+  the packets and Annex B codec data are never changed.
+- `EP3_H264_CONSTRAINED_HIGH=0|1`: H.264 "Constrained High" flags. Some live
+  encoders mark their High profile streams with `constraint_set4_flag` and
+  `constraint_set5_flag` (constraint byte `0x0C`); Broadcom decoders show no
+  picture with them, the same stream with the two flags cleared plays. The
+  flags only declare limits the stream keeps anyway, so the writer clears them
+  in every SPS of profile 100, 110, 122 and 244: from `avcC`, from Annex B codec
+  data and inside the packets (in front of the first slice). The packet data
+  is not changed; the cleared byte is written in its place. Other flags and
+  profiles are kept. On by default on every CPU; `0` keeps the flags, and
+  `-DH264_CONSTRAINED_HIGH_DEFAULT=0|1` sets the build default.
+- `-M WIDTHxHEIGHT`: optional automatic H.264 resolution limit; `0x0` (default)
+  disables it. Unknown dimensions remain eligible. HEVC is not restricted.
+  Explicit positive program IDs selected with `-P` override automatic limits.
+- Automatic HLS/DASH selection prefers variants whose video codec the player
+  can output. Video is never decoded in software: a codec without a writer
+  (AV1, VVC) gets no video track, so such a variant plays audio only. HLS
+  programs and DASH representations with a writer rank above those without
+  before bandwidth is compared; if none has one, the choice is unchanged.
+  With native HLS preselection (no `-P`, no `-M` limit) the demuxer opens one
+  variant by bandwidth alone. When the playlist has several variants and the
+  opened one has video but none with a writer, the input is closed and opened
+  once more without `hls_quality_mode`; the player then chooses among all
+  variants, still honoring `-Q`. Audio-only variants (a cover picture is not
+  video), single-variant playlists and other formats never cause the second
+  open. `-P` and a DASH `-0` representation are not overridden. Whether the
+  receiver's decoder supports a codec that has a writer (HEVC, VP9) is not
+  judged. `-L FFMPEG_DEBUG_LEVEL:1` logs the skipped variant and the reopen.
+- HTTP MPEG-TS uses approximate byte seeking when duration, resource size,
+  transport packet layout (188/192/204 bytes) and HTTP seekability are known.
+  Positions are packet-aligned; timestamp seeking is the fallback. Variable
+  bitrate material can land away from the requested time. Track-switch flushes
+  do not use approximate seeking. Unknown live duration is reported as zero.
+- Audio switching captures the presentation position before clearing decoder
+  buffers or reconfiguring audio output. Internal switch seeks retain
+  subsecond precision and reset discontinuity tracking after a successful VOD
+  seek. Unknown-duration non-DASH network audio switches do not seek or clear
+  video. Static DASH switches seek like other VOD inputs; live DASH switches
+  reset A/V buffers as described below.
+  The companion FFmpeg DASH demuxer must include the single-file
+  seek/reactivation fix so a reselected audio file does not restart at zero.
+- While playback is paused, winding forward or backward, or in slow motion,
+  the playback seek is refused, so an audio switch in those states does not
+  seek. The selection changes at the demuxer read position, as for
+  unknown-duration network input, and `a_s` reports `"sts":0`. A seek that
+  fails during normal playback still fails the switch and restores the
+  previous selection.
+- When the driver rejects `AUDIO_PLAY` or `AUDIO_CONTINUE` after an audio
+  buffer clear, the error is logged (`-L LINUXDVB_SILENT:0`) and the clear
+  still succeeds. The seek or audio switch that requested the clear is no
+  longer reported as failed.
+- Mixed-TS HLS (video plus embedded audio, with separate TS audio renditions)
+  needs both the player's unique HLS track IDs and the companion FFmpeg runtime
+  playlist-reactivation fix. FFmpeg's HLS stream IDs identify playlists and
+  can be shared by embedded audio and video; the player uses stream indices
+  as unique IDs instead, recognizing both `hls` and legacy `hls,applehttp`
+  format names. Packet routing matches the actual stream and input context,
+  never a potentially shared playlist ID. The demuxer rechecks selection during
+  playback, resets suspended input buffers on reactivation and tracks sliding-window timing
+  separately for each playlist. Live audio switches do not seek or reset video.
+  Stdin `a<ID>` selects an ID from `a_l`; `ai<index>` selects a list position.
+  Do not assume a track ID equals its audio-list position.
+  VOD switch seeks also require the companion's excluded-playlist guard:
+  quality preselection can leave other playlists without segments.
+  LIVE switching additionally requires the packet-derived live-window anchor
+  and timestamp-preserving rendition reactivation fix. The first packet played
+  near the live edge is not the first segment in the manifest. Re-anchoring
+  external audio to that packet can falsely advance old audio by several seconds.
+  When an inactive window has completely expired, the demuxer catches up using
+  actual packet timestamps rather than inventing durations for missing segments.
+  A genuine discontinuity without a recoverable live-window origin is reported
+  as an error instead of silently assigning a guessed presentation time.
 
-The update improves HLS/DASH audio switching, stream identity, timestamp handling,
-HTTP MPEG-TS seeking, subtitle selection and radio metadata. The Dreambox-only
-parts of the OE Alliance/Skyjet update (DreamNextGen kernel audio, raw video, keyframe
-trick play, DreamOS live start hold, MP2/VP9 Dreambox workarounds) are not included.
+`EP3_LIVE_SYNC=0|1` controls the optional live-output hold/watch; the variable
+name includes `3`. Unset, it is active on Dreambox receivers only.
+A value beginning with `0` disables it and any other value enables it on
+every receiver. On other receivers the default therefore neither pauses output
+at the first live video packet nor prints `{"log":"live sync: ..."}` to stdout.
+Known positive-duration inputs, including static DASH VOD,
+bypass this mechanism regardless of that setting. When the A/V gap measured
+during that hold exceeds 200 ms, the hold lasts the gap plus
+`EP3_LIVE_SYNC_MARGIN=<ms>` (default 400), at most about 3 s. Afterwards a watch
+holds the picture for up to 3 s when less than 150 ms of audio is buffered
+ahead of it on two checks in a row, until about 1 s is buffered again, at most
+once every 5 s (`{"log":"live sync: audio ran out ..."}`); a value of
+`EP3_LIVE_SYNC_WATCH` beginning with `0` turns the watch off. For receiver-only startup
+problems, `-L FFMPEG_DEBUG_LEVEL:10 -L FFMPEG_SILENT:0` adds input duration,
+start time, initial raw/mapped A/V timestamps, live-sync bypass and seek
+diagnostics to stdout. `track identity` lines report the input context, exact
+format name, stream index, previous ID, assigned ID and media type.
+For receiver timing retests, `audio selection timing` logs the first selected packet's raw
+PTS/time base, mapped output PTS and latest injected video PTS after each change.
+These are injection timestamps, not proof of receiver presentation or lip sync.
+For DASH, the player now preserves the common media timeline across audio
+selections instead of anchoring a new track to the last delivered audio packet.
+The non-SH4 DVB backend honors requested hardware A/V sync for DASH and reapplies
+it after configuring the selected audio codec, before restarting audio.
+Other formats retain their existing sync policy. All DASH audio switches
+reset both A/V decoder buffers and invalidate queued output before restarting
+selected audio; a brief video interruption is expected.
+This restores the buffer-reset behavior present in `2a7459f` and removed by
+`989093c`, which receiver testing identified as the switching regression.
+The demuxer starts the reselected representation at its read position, which
+runs ahead of the playback by all that has been read ahead. Static/VOD DASH
+therefore seeks to the playback position for the switch (the seek does the
+reset), as other VOD inputs do; without it the playback jumped to the read
+position. Live DASH, and a switch while paused or in trick play, reset
+without seeking and continue at the read position.
+Segmented DASH reactivation additionally
+requires the companion correction separating packet-drop state from single-file
+seeks; the earlier `79390c5c6d` fix alone does not cover real reopening.
+If the receiver rejects the DASH sync ioctl, startup/switch reports an error
+rather than silently running with hardware sync disabled.
 
-### OpenBH audio transcoding options
+`EP3_DTS_HD_MODE=0|1` controls the DTS-HD bypass mode of the non-SH4 DVB
+backend. Some drivers pass DTS-HD MA and DTS:X through in full only in their
+DTS-HD mode (`AUDIO_SET_BYPASS_MODE` `0x10`); in plain DTS mode (`2`) they send
+the core alone. A DTS track is still started in plain DTS mode. The first frame
+written after a start or an audio switch decides: if it begins with the DTS-HD
+extension substream sync `64 58 20 25`, or one follows its 16-bit big-endian
+core frame, the decoder is stopped, cleared and restarted in DTS-HD mode before
+that frame is written; if the driver refuses the mode, plain DTS is set again.
+A frame without extension costs no ioctl, and a seek keeps the mode. While
+playback is paused the decoder is not touched and a later frame decides.
+Unset, this is active only where `/proc/stb/audio/dtshd` exists and the
+receiver is not a Dreambox, and on a VU+ whose `/proc/stb/info/vumodel` is
+`uno4kse`, `ultimo4k` or `duo4kse` (no such file there): the drivers whose
+DTS-HD mode is known to cope with a receiver that has no DTS-HD; elsewhere
+such a receiver could get no sound at all. Only the exact values `0` and `1`
+are honored; anything else selects that default. Software-decoded DTS uses
+the PCM writer and is not affected.
+`-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` logs
+`DTS with HD extension, set bypass 0x10`.
 
-The OpenBH options are long options only, so all short options stay the same as
-upstream and later upstream options do not collide with them. They need a ServiceApp
-that sends the long options (older ones used `-D`, `-X`, `-K`, `-Z`, `-Y`).
+Audio and video share one timestamp origin, and the distance between their
+first timestamps is kept as the source has it. A track whose first timestamp
+is more than 60 seconds (modulo the 33-bit PTS range) away from where the
+other track is does not count from the same origin: no receiver can play such
+a distance as an A/V offset, and libavformat itself takes a timestamp more
+than 60 seconds before the first one of its program for one of the next 33-bit
+round, so that track arrives about 26.5 hours away. It then starts where the
+other track started. Distances up to 60 seconds, further streams of a track
+(audio renditions) and DASH are not affected. Nothing in such a source relates
+the two origins, so its lip sync is only as good as its interleaving.
 
-| Option | Behavior |
+`EP3_DTS_PAD=0|1` controls padding of DTS core frames in the non-SH4 DTS
+bitstream writer. Unset, it is active on every receiver but a Dreambox.
+Only the exact values `0` and `1` are honored; anything else selects that
+default. Several audio drivers handle only core frames whose size is a
+multiple of four bytes, while DVD-style full-rate DTS (1509.75 kbit/s at
+48 kHz) uses 2013-byte frames. A packet holding exactly one 16-bit big-endian
+core frame of unaligned size is copied, zero-padded to the next multiple of
+four, and its `FSIZE` raised to match, together with the size field of an
+X96 or XCH extension inside it. The PES header is built for the padded size;
+the decoded audio is unchanged. Passed through untouched: aligned frames,
+packets that are not one lone core frame (core plus DTS-HD extension
+substream, 14-bit and little-endian streams), frames with a header CRC, and
+frames whose IEC 61937 burst has no room for the padding.
+
+Add `-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` for hardware diagnostics.
+`hardware sync` reports the requested/applied policy. `hardware timing` samples
+both decoder PTS at startup, before a switch, and on first selected-audio
+injection, with separate wall-clock observation times. Unsupported queries are
+reported as unavailable, never replaced with injection timestamps. Driver PTS
+semantics and queued writes can still differ from the instant of audible output.
+`video clock` and `audio selection clock` report raw 90-kHz timestamps, the
+shared base, active offsets, and audio PTS before AAC smoothing. Retain startup
+through repeated `a<ID>` selections and switch-back on both AB Pulse 4K and
+VU+ Uno 4K SE. Confirm lip sync and continuously moving video, not just close
+logged PTS. Host clock/packet/ioctl tests do not establish receiver lip sync.
+Check startup `-t <audio-list-index>`, send `al`/`ac`/`vc`, switch to an
+external audio ID and back with `a<ID>`, then request those lists again.
+Embedded audio must be audible and its reported ID must differ from video.
+For LIVE, start with default settings, switch embedded -> external -> external
+-> embedded, and continue playback across several manifest-window rotations.
+Audio must stay synchronized and video must resume after the brief DASH
+buffer reset, including after returning to embedded audio. Repeat the switch
+and switch-back test on static/VOD DASH as well.
+If it fails, retain a redacted log spanning startup, the first
+switch and the stall, then compare `EP3_LIVE_SYNC=0` separately; do not enable
+extra synchronization or seek to live edge to mask the initial result.
+Use `-C` to disable list caching when checking track refresh. Compare normal
+output (`-a 0`) with explicit AAC software decoding (`-a 3`); the latter should
+report `A_IPCM` or `A_LPCM`, not `A_AAC`. Keep
+`AV_DEBUG_LEVEL` disabled: the companion's existing FFmpeg diagnostics can
+include decryption material. Redact URLs/headers before sharing logs.
+
+Audio `a_l` list entries and `a_c` current-track JSON add three keys after
+`n`, in this order: `"c"` (channel count, `0` when unknown), `"d"` (codec name
+for display, `""` only when there is no track) and `"t"` (track title, `""`
+when the track has none):
+`{"a_c":{"id":1,"e":"A_EAC3","n":"eng","c":6,"d":"Dolby Atmos","t":"Commentary"}}`.
+Four more audio keys follow `t`: `"sr"` (sample rate in Hz), `"br"` (bit
+rate in bit/s), `"cl"` (channel layout as FFmpeg names it, `stereo`,
+`5.1(side)`, `7.1`) and `"bps"` (bits per sample, lossless codecs only:
+PCM, FLAC, TrueHD/MLP, DTS-HD MA, ALAC and others), `0` or `""` when unknown:
+`...,"t":"Commentary","sr":48000,"br":640000,"cl":"5.1(side)","bps":0}`.
+Subtitle `s_l` entries and `s_c` add `"t"` after `f`:
+`{"s_c":{"id":3,"e":"S_TEXT/ASS","n":"ger","f":1,"t":"Forced"}}`.
+The keys are always present, including in the no-track answers (`"id":-1`,
+`"c":0,"d":"","t":"","sr":0,"br":0,"cl":"","bps":0`). `id`, `e`, `n` and `f`
+are unchanged; `e` remains the codec ID that selects the writer. The
+`a_s`/`s_s` switch results are unchanged.
+
+`d` is derived from codec ID and profile: `DTS`, `DTS-ES`, `DTS 96/24`,
+`DTS Express`, `DTS-HD HRA`, `DTS-HD MA`, `DTS:X`, `DTS:X IMAX`,
+`Dolby Digital`, `Dolby Digital +`, `Dolby Atmos`, `Dolby TrueHD`, `MLP`,
+`AAC`, `AAC-LC`, `HE-AAC`, `HE-AAC v2`, `AAC-LD`, `AAC-ELD`, `xHE-AAC`, `MP2`,
+`MP3`, `FLAC`, `Opus`, `Vorbis`, `PCM`, `LPCM` and similar names; codecs
+without an entry report FFmpeg's codec name. Profiles the linked FFmpeg does
+not define (DTS:X, DTS:X IMAX, E-AC-3 Atmos and xHE-AAC on older releases)
+report the base name. `c` and `d` come from the codec parameters read when
+tracks are listed, so they are only as exact as FFmpeg's probing. So do
+`sr`, `br`, `cl` and `bps` (for DTS-HD the values of the codec parameters,
+which can differ from the core a receiver decodes); `br` is the Matroska
+statistics tag `BPS` when the codec parameters have no bit rate, otherwise
+`0` (the HLS `BANDWIDTH` covers a whole variant and is not used). For the
+selected track they follow changes of the codec parameters during playback,
+such as an HLS variant with other audio.
+
+Two values follow the selected audio track during playback. When that track
+is decoded in software, `c` is the channel count of the decoded frames. For
+E-AC-3, `d` becomes `Dolby Atmos` after three packets signalling JOC in the
+syncframe header and returns to `Dolby Digital +` after 48 consecutive
+packets without it; only headers of packets that are played anyway are
+parsed. No message is emitted for such a change: request `ac` or `al` again.
+A cached `a_l` answer is rebuilt when one of these values changed.
+
+Dual mono audio (two languages on the left and the right channel) has a
+channel selection, the one enigma2 offers for live TV
+(`iAudioChannelSelection`). Stdin `am<n>` selects `0` left, `1` stereo or
+`2` right; `am` alone reports the selection. The answer is
+`{"a_m":{"m":2,"sts":0}}`: `m` is the selection now, `sts` is `0` or `-1`
+when the value is not 0 to 2 (`m` unchanged) or the audio decoder refused
+`AUDIO_CHANNEL_SELECT`. `--audio-channel left|stereo|right` (or `0|1|2`) sets
+it before the playback starts. The DVB output gives it to the decoder
+(`AUDIO_STEREO`, `AUDIO_MONO_LEFT`, `AUDIO_MONO_RIGHT`), sets it again after
+every decoder start (track switch, DTS-HD restart, PCM restart after a seek)
+and leaves the decoder at stereo when it stops. Software decoded audio
+(`-K`, `-a`, `-3`, `-e`, `-d`, `-m`, `-w` and the decoders on by default)
+does not depend on the driver: the chosen channel is copied to both channels
+of the stereo PCM, so the selection works on every box and in the PCM export.
+A compressed bitstream passed through to HDMI or S/PDIF is not changed.
+`EPLAYER3_EXTENDED` carries `"achannel":1` for front ends to see that the
+command is known; an older player ignores `am` without an answer.
+
+`t` is the stream's `title` metadata tag (Matroska track name, AVI stream
+name). For HLS it falls back to `comment`, where the demuxer exports the
+`NAME` of an `EXT-X-MEDIA` rendition. DASH exports no name. Titles pass
+through the same JSON escaping as `n` and are cut to fit a 256-byte escaped
+buffer.
+
+Subtitle `s_l` list entries and `s_c` current-track JSON add `"f":0|1` for the
+forced flag, from stream disposition or a standalone `forced` title token.
+Language alone never implies forced subtitles. Disabled subtitles report ID
+`-1`, `f:0`. Adaptive demuxers discard unselected subtitles; embedded MP4/MKV
+subtitle handling remains enabled.
+
+`--forced-only` (stdin `so1`, `so0` to turn it off again) sends only forced
+cues of the selected subtitle track as `s_a`. PGS marks each forced picture
+(the `forced_on_flag` of the composition object, `AV_SUBTITLE_FLAG_FORCED`
+from FFmpeg): only those are sent, also on a track listed with `f:1`. The
+other formats have no such mark: every cue of a track listed with `f:1`
+counts as forced, no cue of another track (SubRip, ASS, WebVTT, mov_text,
+closed captions, DVB, XSUB). A PGS or DVB display set without a forced
+picture still comes as an `s_a` without rectangles, which clears the screen
+as the end of a cue does; the packets keep reaching the decoder, so a forced
+cue after unforced ones is complete. `so` alone reports the setting, the answer is
+`{"s_o":{"o":1,"sts":0}}` (`sts` `-1` for a value other than 0 or 1, `o`
+unchanged). `EPLAYER3_EXTENDED` carries `"forcedonly":1`; an older player
+ignores `so` without an answer and stops with the usage text on
+`--forced-only`.
+
+Graphic subtitles (PGS, DVB, XSUB) are offered only with `-G DIRECTORY`: each
+picture is saved there as an RGBA PNG file, and the `s_a` message names the
+files with their position and size. The `exteplayer3png.so` plugin writes
+them when `dlopen()` finds it. Otherwise the PNG encoder of libavcodec writes
+them (FFmpeg with `--enable-encoder=png`, libavcodec 57.37.100 or newer),
+under a temporary name renamed when complete. Only when neither is available
+are the pictures not saved; the tracks are still listed, `s_a` messages carry
+no rectangles and `{"e_plugin":["png","init",...]}` reports the failure.
+`-L PLUGIN_SILENT:0` logs why the plugin was not loaded and whether the
+encoder takes its place.
+
+Closed captions carried in the video stream (CEA-608 in ATSC A/53
+`cc_data()`: H.264 and HEVC SEI, MPEG-2 user data) become the text track
+`{"id":65536,"e":"S_TEXT/EIA608","n":"und","f":0,"t":"CC1"}` once the first
+caption has come; the player then sends `s_l` again by itself. Only field 1
+(CC1) is decoded, by the ccaption decoder of libavcodec; CEA-708 services are
+not. EIA-608 subtitle streams of the demuxers (MOV `c608`, SCC) are listed as
+`S_TEXT/EIA608` too. The end of a caption is known only when the next one is
+decoded, so a caption is sent in `s_a` cues of up to 500 ms that end at the
+time read so far; they meet without a gap and are shown as long as the
+receiver buffers more than that. Without the ccaption decoder nothing is
+listed.
+
+The current video track is reported as
+`{"v_c":{"id":2,"e":"V_MPEG4/ISO/AVC","n":"und","w":1280,"h":720,"f":25000,"p":1,"an":1,"ad":1}}`:
+picture size, frame rate in frames per 1000 seconds and the progressive flag
+(`-1` unknown) of the decoder. The line is sent at start, on `vc` and again
+when the decoder reports the progressive flag. For a stream FFmpeg has not
+seen a picture of (live MPEG-TS or HLS over HTTP: `"w":0,"h":0` and a guessed
+`f`) the non-SH4 DVB backend completes `w`, `h`, `f` and `p` with the values
+of the video decoder and sends the line once more, with the final values. The
+driver sends its size, frame-rate and progressive events only for values that
+differ from the previous playback, so what no event delivers is asked from it
+(`VIDEO_GET_SIZE`, `VIDEO_GET_FRAME_RATE`, `/proc/stb/vmpeg/0/progressive`).
+Right after the start the driver still answers with the values of the
+previous playback and its events follow a moment after it has been asked:
+that first answer is never used. Once no event has come for half a second of
+decoder PTS the open values are asked again and the line is sent, also for
+a progressive event; without a size the driver is asked up to ten more
+times. Events and PTS are also read on position requests (`j`), since a
+file is often written to the end before that. Values FFmpeg knows are never
+replaced, and such streams produce the same lines as before.
+`{"v_e":{"w":1280,"h":720,"a":1,"f":25000,"p":1}}` repeats the decoder events
+once size, frame rate and progressive have all been reported by events in
+this process, which the same driver behaviour makes rare; front ends should
+read `v_c`.
+
+Audio-only playback additionally emits
+`{"m_t":{"rt":"Artist - Title","t":"Title","a":"Artist"}}` when ICY or
+format/stream metadata changes. Empty strings clear old metadata; unchanged
+values are deduplicated and state resets for each session. JSON control
+characters are escaped, valid UTF-8 is preserved, and invalid legacy bytes
+are encoded as Unicode escapes. Video/TV metadata is not emitted as radio text.
+JSON IPC remains on stderr and diagnostics on stdout.
+
+The `v_c` current-video-track JSON adds `"hdr":0|1|2|3` as its last key:
+`{"v_c":{"id":256,"e":"V_HEVC","n":"und","w":3840,"h":2160,"f":50000,"p":1,"an":1,"ad":1,"hdr":1}}`.
+`0` is SDR, `1` HDR10 (PQ transfer or a mastering-display SEI), `2` HLG and
+`3` another BT.2020 transfer (`transfer_characteristics` 14 or 15 without
+PQ/HLG signalling). The value comes from the HEVC SPS VUI and the
+mastering-display and alternative-transfer SEI of the selected video stream;
+an alternative-transfer SEI overrides the VUI. For other codecs (VP9, AV1,
+H.264) it comes from the transfer characteristic of the codec parameters,
+which the container (Matroska `Colour`, MP4 `colr`/`vpcC`) or the bitstream
+carries: `smpte2084` is `1`, `arib-std-b67` `2`, `bt2020-10`/`bt2020-12`
+`3`, anything else or none `0`. Dolby Vision and HDR10+ signalling is not
+evaluated. The `v_c` sent when there is no video track (`"id":-1`) has no
+`hdr` key.
+
+Six keys follow `hdr` in `v_c`, and `n` in the `v_l` entries:
+`"pr"` (profile and level as ffprobe names the profile, `High@4.1`,
+`Main 10@5.1`; the level as written for H.264, HEVC, VP9 and AV1, FFmpeg's
+number for other codecs), `"bd"` (bit depth of the luma samples), `"br"`
+(bit rate in bit/s, from the codec parameters or the Matroska `BPS` tag),
+`"dv"` (Dolby Vision profile of the configuration record of MP4, Matroska
+or MPEG-TS, `0` without one), `"cr"` (colour primaries, `bt709`,
+`bt2020`) and `"tc"` (transfer characteristic as FFmpeg names it, `bt709`,
+`smpte2084` for PQ, `arib-std-b67` for HLG; it tells PQ from HLG for every
+codec), `0` or `""` when unknown, also in the no-track `v_c`:
+`...,"hdr":1,"pr":"Main 10@5.1","bd":10,"br":0,"dv":8,"cr":"bt2020","tc":"smpte2084"}`.
+For HEVC `tc` is the VUI value of the codec parameters; an HLG
+alternative-transfer SEI after a BT.2020 VUI shows only in `hdr`.
+They come from the codec parameters of the stream. A change of them while
+the track plays (an HLS variant of another codec or profile) is sent as
+`v_c` without a request; `v_l` keeps the values of the list.
+
+Detection starts with the first packet of the selected video stream, from its
+extradata (Annex-B or hvcC) and then from the packets themselves, so a `vc`
+answered before that packet reports `0`. When the value changes later, `v_c`
+is emitted again without a request, as for a changed progressive flag. HDR10
+and HLG are final when seen. SDR and `3` remain provisional until 768 KiB of
+video after the first SPS, or 2 MiB in total, were inspected; `3` can still
+become `1` or `2` in that time. Packets are only copied for inspection;
+nothing extra is read from the input and no video is decoded. For the other
+codecs the value is set with the first packet and follows the codec
+parameters after that.
+
+Commands are read from stdin. When stdin is a pipe or a socket and reaches
+its end (the front end exited or crashed without sending `q`), the player
+acts as on `q`: it stops and frees the audio and video devices, also while
+the input is still opening. A terminal, `/dev/null` or a regular file on
+stdin keeps the old behaviour: the end of input is not a command, and
+playback goes on until it ends by itself.
+
+The input is opened in a thread of its own while the main thread waits for
+`q`. The end of the open wakes that wait through a pipe of its own, so
+`PLAYBACK_OPEN` follows the open at once, also when it fails. Before, it came
+only when the 1 s timeout of the wait ran out or a command arrived, which
+added up to a second to every start.
+
+---
+
+## 🎞️ FFmpeg companions
+
+These backports target the patched FFmpeg trees of
+[skyjet18/FFmpeg](https://github.com/skyjet18/FFmpeg) (`release/6.1-patched`
+and `release/9.0-patched`), not an unmodified system FFmpeg. The commit IDs
+below name the logical commits of the tree the backports were made in; they
+are not commit IDs of these published branches:
+
+| FFmpeg commit | Purpose |
+|---|---|
+| `8a5ed2f3aa` | Native HLS quality/default-audio options, EVENT live-edge startup and backwards sequence resync. |
+| `f9924289f9` | ATSC PMT type `0x87` identifies E-AC-3 without requiring probe packets. |
+| `0ebaa163bc` | Short DASH timeline-window bounds and opt-in initial sparse-subtitle discard. |
+| `6d59900cf0` | Safe initial delay for availability-clock DASH duration templates without a manifest delay. |
+| `89c9657d5a` | Fractional DASH seeks, shared seek origin and bounded transient live-fragment recovery. |
+| `f7e8840943` | Stable HLS stream association, discard state and seeks across changed segment layouts. |
+| `2fad38b831` | Generated-media HTTP tests for live DASH recovery/startup/ranges and HLS ad transitions. |
+
+The player requests `hls_quality_mode`, `hls_audio_default_only` and
+`dash_subtitle_default_discard` through AVOptions. These option defaults remain
+unchanged for other callers. Automatic HLS preselection is bypassed for an
+explicit program or active resolution limit so the player can inspect all
+eligible programs after probing. Without `-t`, HLS starts with the audio
+rendition marked `DEFAULT=YES` (the first track when none is marked); DASH
+starts with the best audio representation of the first track's language (see
+[Adaptive playback](#-adaptive-playback-and-metadata)).
+
+Live DASH media-fragment opens now retry transient failures globally, with at
+most two retries separated by interruptible 400 ms delays. VOD, initialization
+sections and permanent authorization failures are not retried. Exhaustion keeps
+the existing demuxer skip/error behavior; individual network opens still obey
+their normal IO timeout policy. HLS association retains absent track identities
+and selected/discarded state without merging multiple audio tracks.
+
+### 🌐 HTTP input: HLS options and stall limits
+
+For every `http://` and `https://` input the player additionally sets
+`allowed_segment_extensions=ALL`, `extension_picky=0`, `skip_image_head=1` and
+`seg_max_retry=3`. These are HLS demuxer options; other demuxers, and FFmpeg
+builds without them, leave them unused. HLS segments without a file extension,
+or named `.jpg`, `.png` or `.php`, are therefore accepted and their content
+decides. Some servers put a PNG, JPEG, GIF or WebP image in front of the
+MPEG-TS data of every segment (image CDNs); with an FFmpeg whose hls demuxer
+has `skip_image_head` each segment is read from its first TS packet on,
+without it the first segment is probed as the picture and the stream does
+not open. A segment that fails to open is requested up to three more times,
+without a pause, before the demuxer skips it. Errors in the middle of a
+segment are not retried. Local playlists keep the FFmpeg defaults.
+
+The startup message tells front ends which of these segments this build
+plays: `"hlsseg"` in `EPLAYER3_EXTENDED` is a bit mask, `1` segments with any
+name (always set), `2` an image in front of the TS data (the linked FFmpeg
+has `skip_image_head`). A front end that otherwise buffers such streams
+with a downloader first can play them directly when the bit is set.
+
+URLs containing `.m3u` additionally send `Accept-Encoding: gzip`, but only when
+`avformat_configuration()` contains `--enable-zlib` and the `-h` headers hold
+no `Accept-Encoding:` line of their own; `-h "Accept-Encoding: identity"`
+therefore disables it. An autodetected zlib does not appear in that string and
+does not count. The HLS demuxer copies its headers to every request, so
+segments, initialization sections and keys carry the header too. Compressed
+media requested by byte range (`EXT-X-BYTERANGE`) is not handled. `-h` headers
+not ending in CRLF get one appended before the added line.
+
+`-T` (HTTP timeout in ms, default 10000) bounds one wait on a socket, not the
+time a demuxer spends reconnecting or skipping segments inside one call.
+HTTP(S) inputs, including a separate `-x` audio input, therefore get a stall
+limit of three times `-T`, at least 60 s. `-T 0` disables it. Local files,
+custom IO and other protocols have no limit. It applies separately to:
+
+- `avformat_open_input()`: duration of the whole call.
+- `avformat_find_stream_info()`: time without a byte read through the input's
+  IO context. HLS and DASH read through connections of their own, so for them
+  it is the duration of the whole call.
+- Each `av_read_frame()` during playback: duration of the call. The clock
+  restarts while paused; time spent writing to the decoders is outside it.
+
+A stalled open fails like any other open:
+`{"FF_ERROR":{"msg":"Connection timed out","code":-110}}`, a negative
+`PLAYBACK_OPEN` `sts` and exit code 10. With `-L FFMPEG_SILENT:0`, stdout has
+`open not finished after 60 s, ended` or
+`stream info not finished after 60 s, ended`, and for a stalled read
+`no packet for more than 60 s, read ended`. That read returns what the
+demuxer makes of the interruption: `AVERROR_EXIT` and `AVERROR_EOF` take
+normal end-of-stream handling (`-v` live TS mode restarts the source), other
+errors enter the existing 10-second network read retry. Name resolution
+cannot be interrupted and is not covered, nor is a server that keeps sending
+a few bytes within every limit during stream probing.
+
+When playback ends because a read hit the stall limit, or because an HTTP(S)
+read error lasted through the 10-second retry, the player sends
+`{"FF_ERROR":{"msg":"Connection timed out","code":-110}}` (stall limit) or
+the error of the read before it ends, so a front end can tell a lost
+connection from the end of the stream. The end of the input itself sends no
+`FF_ERROR`, as before; neither does the `-v` live TS mode, which restarts the
+source, nor a stop by `q`.
+
+A local input that cannot be opened sends `FF_ERROR` with the error of
+`fopen()` (for example `{"FF_ERROR":{"msg":"No such file or directory","code":-2}}`)
+before `PLAYBACK_OPEN` with a negative `sts` and exit code 10, as inputs that
+FFmpeg opens itself already did. A `-x` file given as `iptv://path` that
+cannot be read is opened as `file://path` and fails the same way, instead of
+the usage text and exit code 1 with no JSON after the `EPLAYER3_EXTENDED`
+start line.
+
+Without `-u`, the player opens `http://` and `https://` inputs (the playback
+uri and the `-x` file, with their HLS/DASH playlists and segments) with the
+User-Agent `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36`, a current desktop
+Chrome. The companion tree's HTTP protocol defaults to the same string with
+Chrome 106; a libavformat without that change would otherwise send
+`Lavf/<version>`, which some servers refuse. `-u` or `-f user_agent=...` replaces it, and a
+`User-Agent:` line given with `-h` takes precedence over both.
+
+### 🔒 HTTPS: CA certificates
+
+FFmpeg 9 verifies the certificate of every `https://` server by default
+(`tls_verify=1`; FFmpeg 6.1 did not). Without `-f ca_file`, its OpenSSL backend
+takes the default locations of the OpenSSL it is linked with: the file
+`$OPENSSLDIR/cert.pem` (or `SSL_CERT_FILE`) and the hashed links
+`<hash>.0` in `$OPENSSLDIR/certs` (or `SSL_CERT_DIR`). Some images have
+neither where that OpenSSL looks: VTi ships only
+`/etc/ssl/certs/ca-certificates.crt`, without `cert.pem` and without hashed
+links, so with a bundled OpenSSL (`OPENSSLDIR=/etc/ssl`) every https open
+failed with `certificate verify failed`.
+
+At startup, before any connection, the player therefore sets `SSL_CERT_FILE`:
+
+1. `SSL_CERT_FILE` already set: nothing changes, it wins.
+2. `-f ca_file=<file>` (or `cafile`) names a readable file: `SSL_CERT_FILE` is
+   set to that file. FFmpeg uses the option itself only for the connection of
+   the playback uri: the HLS and DASH demuxers copy just a fixed list of
+   options (`headers`, `user_agent`, `cookies`, `tls_verify`, ...) to their own
+   connections, so variant playlists, segments and keys were opened without it
+   and failed. Through `SSL_CERT_FILE` they trust the same file, in addition
+   to the hashed links of the default directory.
+3. The default locations are usable (a readable `cert.pem` of the linked
+   OpenSSL, or at least one hashed link in its certificate directory or in
+   the directories of `SSL_CERT_DIR`): nothing changes. The player asks the
+   libcrypto loaded with FFmpeg (`X509_get_default_cert_file()`,
+   `X509_get_default_cert_dir()`); without one it assumes `/etc/ssl`.
+4. Otherwise the first readable, non-empty file of
+   `/etc/ssl/certs/ca-certificates.crt` (Debian, OE: openATV, OpenPLi, VTi,
+   DreamOS), `/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`,
+   `/etc/pki/tls/cacert.pem`, `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`
+   and `/etc/ssl/cert.pem`. stdout then has
+   `CA certificates for https: <file> (SSL_CERT_FILE)`.
+
+The variable reaches every TLS connection of the process: the playback uri, the
+`-x` file and the playlists, segments and keys of HLS and DASH. Verification
+stays on; a server whose CA is not in the file is still refused, and
+`-f tls_verify=0` still turns it off. Images whose OpenSSL finds its
+certificates (openATV, OpenPLi: hashed links in `/etc/ssl/certs`) keep the
+environment as it is, so OpenSSL does not parse a whole bundle for every
+connection there. GnuTLS and mbedTLS builds of FFmpeg do not read
+`SSL_CERT_FILE`; for them nothing changes. For tests, `EP3_CA_FILES` (a `:`
+separated list) replaces the list of step 4 and `EP3_CA_DEFAULT_FILE` the
+default file step 3 checks.
+
+---
+
+## 🖥️ Video track for enigma2
+
+Every `v_c` line of a video track (size, frame rate, progressive,
+aspect) also goes as one datagram to `/var/run/video.socket`, as in the
+OE-Alliance tree. Recent OpenATV-based enigma2 versions read it to follow
+the video of a player that a plugin started directly, e.g. for the automatic
+resolution. Without a listener the datagram is dropped; nothing waits for
+it. `-DEXTEPLAYER_VIDEO_SOCKET='"path"'` changes the path, an empty string
+turns it off.
+
+---
+
+## 🔊 Optional decoded PCM export
+
+`-K` enables `/tmp/exteplayer3_pcm_audio.fifo`, otherwise export is disabled.
+It forces software decoding (including AAC/LATM, AC-3/E-AC-3, DTS, WMA,
+MP3, AMR, Vorbis and Opus), increasing receiver CPU usage. The corresponding
+FFmpeg decoders must be available.
+
+Each chunk has a 16-byte little-endian header, equivalent to Python
+`struct.Struct("<IIHHI")`: magic `0x504d4341` (bytes `ACMP`), sample rate,
+channel count, bits per sample (16), and payload length. Payload is interleaved
+signed S16LE audio. Rate/channel count may change between chunks.
+
+Unlike the reference implementation, chunks are split on complete audio sample
+frames to fit `PIPE_BUF`, then header and payload are written atomically.
+No-reader, slow-reader and disconnect conditions drop complete chunks, never
+leave partial frames, and never delay playback. Consumers must read exact
+header/payload lengths and tolerate gaps; bytewise magic resynchronization is
+not necessary with this writer alone. Repeated no-reader opens are limited to
+one every two seconds. Disconnects allow an immediate reconnect.
+
+Only an owned FIFO is accepted; symlinks, regular files and replaced inodes are
+rejected. New FIFOs have mode 0600. A nonblocking advisory lock excludes a
+second cooperating exporter. Use one reader: multiple readers divide bytes
+rather than receiving independent copies. SIGPIPE is suppressed only around
+the writer thread's operation, without changing the process-wide handler.
+The first normal drop and final drop count are logged to stdout; unexpected
+export errors are reported and disable export for that session without
+stopping playback. Initialization errors fail playback initialization.
+
+The FIFO remains on disk across sessions for reconnecting readers. Close
+descriptors on stop; never replace the FIFO while a session is active.
+
+---
+
+## ⏩ Start position
+
+`--start <seconds>` (a long option: `-s` is the stereo downmix) starts the
+playback at that position, for example to resume. The value may have a
+fraction (`--start 754.5`). The play thread does the seek of the seek commands
+before it reads the first packet, so nothing from the beginning is written
+or shown first; that works for local files, HTTP and HLS/DASH VOD. It is
+ignored for streams without a duration (live) and for a position at or
+behind the end, which start from the beginning. A loop restart (`-i`) starts
+at 0. `EPLAYER3_EXTENDED` carries `"start":1`, so a front end can test for the
+option instead of a version number. An invalid value (negative, not a number)
+is a parameter error.
+
+---
+
+## 🖼️ Embedded cover
+
+Audio files often carry their cover: an ID3v2 `APIC` frame (MP3), a picture
+block (FLAC, Ogg `METADATA_BLOCK_PICTURE`), `covr` (M4A), an attachment
+(Matroska). FFmpeg shows such a picture as a video stream with
+`AV_DISPOSITION_ATTACHED_PIC`; the player never plays it as video.
+
+`--cover <path>` (opt-in, nothing changes without it) writes that picture
+after the open, as the file has it (JPEG or PNG bytes, nothing decoded or
+converted), to `<path>`, and sends one message before `PLAYBACK_OPEN`:
+
+```
+{"cover":{"file":"/tmp/cover.img","type":"jpeg","w":500,"h":500,"size":48211}}
+{"cover":{}}
+```
+
+- `type`: from the first bytes, `jpeg` (`FF D8 FF`), `png` (`89 50 4E 47 ...`),
+  otherwise `bin`. `w`/`h`: the picture size when FFmpeg knows it, else `0`.
+  `size`: bytes written.
+- `{"cover":{}}`: the file has no cover (or it could not be written). The
+  file at `<path>` is then removed, so an earlier cover is never taken for
+  the one of this file. With a cover the file at `<path>` is replaced.
+- Written to `<path>.tmp` first and renamed: a reader sees the old file or
+  the whole new one.
+- Several pictures: the front cover first (ID3/FLAC picture type 3,
+  `Cover (front)`; Matroska `cover.*`), else the first one. A Matroska
+  attachment named `cover*` whose mimetype is no image type (FFmpeg makes no
+  attached picture of it) is taken when it starts with JPEG or PNG bytes.
+- A picture larger than 8 MiB is not written (`{"cover":{}}`).
+- Once per run, after the open; the player plays one file per run.
+
+`EPLAYER3_EXTENDED` carries `"cover":1`. An invalid value (empty path) is a
+parameter error.
+
+---
+
+## 📖 Chapters
+
+At the start the player sends the chapters of the input in one line, right
+after the track lists (`a_l`, `a_c`, `s_l`, `s_c`); stdin `cl` sends it again:
+
+`{"c_l":[{"id":0,"s":0,"e":4321,"t":"Intro"},{"id":1,"s":4321,"e":8000,"t":"Say \"hi\""}]}`
+
+| Key | Meaning |
+|---|---|
+| `id` | position in the list, from `0` |
+| `s`, `e` | start and end in ms (whole numbers) from the start of the media: the same base as the position `J` and the seeks `gf`/`ga` (the `start_time` of the input is taken off, a file muxed with a 10 s offset has its first chapter at `0`); rounded down, `0` for a time before the start |
+| `t` | the `title` of the chapter, JSON-escaped as track names (UTF-8 passed through, other bytes from 0x80 as `\u00xx`), `""` without one |
+
+The list is sorted by the start and has no limit; an input without chapters
+gives `{"c_l":[]}`. The chapters are whatever FFmpeg exposes: Matroska, MP4,
+M4A/M4B (QuickTime chapter track or Nero `chpl`), Ogg (`CHAPTERxxx` comments),
+also over HTTP. FFmpeg fills in an end that the file does not have (the start
+of the next chapter, the end of the last one is the duration); one that is
+still unknown is sent as the start. With a separate audio input (`-x`) the
+chapters are those of the first input. HLS and DASH have none. The list is
+taken at the open and does not change.
+
+To jump to a chapter a front end seeks to its start with `gf<seconds>`, which
+takes a fraction (`gf4.321`): `s / 1000` as it is. The decoder of the box shows what it gets from
+the keyframe on, so the playback starts at the keyframe before the target;
+`ga<seconds>` starts at the first keyframe at or after it instead (the one
+before when there is none behind the target). `EPLAYER3_EXTENDED` carries
+`"c_l":1` and `"seekms":1`. An older player ignores `cl` without an answer,
+reads `gf4.321` as `gf4` and `ga<seconds>` as `gc<seconds>`.
+
+---
+
+## 🔁 Optional audio transcoding
+
+| Option | Meaning |
+|---|---|
+| `-Z` | decode DTS and encode it to AC-3 5.1 (48 kHz, 640 kbit/s); it also applies when DTS software decoding (`-d`) is requested |
+| `-X` | the same for TrueHD/MLP |
+| `-E` | `-Z` and `-X` encode to E-AC-3 5.1 (48 kHz, 768 kbit/s) instead of AC-3; it does nothing without `-Z` or `-X` and does not affect `-Y` |
+| `-Y` | decode HE-AAC and encode it to AAC-LC with ADTS headers, keeping the decoded sample rate and channel count (64 kbit/s per channel; more than six channels are mixed down to 5.1) |
+
+Five long options name the source and the target codec, so that one front end
+can drive players that only know these names:
+
+| Long option | Meaning |
+|---|---|
+| `--dts-ac3` | same as `-Z` |
+| `--truehd-ac3` | same as `-X` |
+| `--heaac-aaclc` | same as `-Y` |
+| `--dts-eac3` | DTS to E-AC-3, TrueHD/MLP is not affected |
+| `--truehd-eac3` | TrueHD/MLP to E-AC-3, DTS is not affected |
+
+The E-AC-3 target is kept per source codec: `--dts-eac3 --truehd-ac3` encodes
+DTS to E-AC-3 and TrueHD to AC-3. `--dts-eac3` and `--truehd-eac3` select
+their codec by themselves, without `-Z` or `-X`. `-E` still means both: it
+turns every codec selected with `-Z`/`--dts-ac3` or `-X`/`--truehd-ac3` to
+E-AC-3. When the AC-3 and the E-AC-3 form are given for the same codec
+(`--dts-ac3 --dts-eac3`, `-Z --dts-eac3`, `-Z -E`), E-AC-3 wins, in any order
+of the options. Long options may be shortened as far as they stay unique
+(`getopt_long`); an unknown long option ends the player with the usage text,
+as an unknown short option does.
+
+All of them are flags without an argument and disabled by default. Transcoding
+decodes and re-encodes in software, increasing receiver CPU usage, and needs
+libavcodec 58 or newer with the corresponding decoders and encoders.
+
+The startup message reports the available encoders as a bit mask:
+`{"EPLAYER3_EXTENDED":{"version":187,"xcode":7}}`. `1` is AC-3 (`-Z`, `-X`),
+`2` AAC (`-Y`) and `4` E-AC-3 (`-E`, `--dts-eac3`, `--truehd-eac3`); `xcode`
+is always present and `0` when none is available. Front ends should offer the
+options from this value, not from the version number. Unavailable requests
+are reduced, each with one line on stdout:
+
+- Without an E-AC-3 encoder, `-E`, `--dts-eac3` and `--truehd-eac3` fall back
+  to AC-3 for the codec they select.
+- Without a usable AC-3 or E-AC-3 target, a codec is not transcoded. With an
+  E-AC-3 encoder but no AC-3 encoder only the E-AC-3 requests work.
+- Without an AAC encoder, `-Y` is ignored.
+- With `-K`, all transcoding options, short and long, are ignored: PCM export
+  needs the decoded samples of every track.
+
+An ignored option leaves the track on its normal path, as does a track whose
+decoder cannot be opened. Track JSON is unchanged: `e` in `a_l`/`a_c` keeps
+the value it has without transcoding (`A_DTS`, `A_IPCM`, `A_AAC`) and
+`sr`, `br`, `cl` and `bps` are those of the source track, as with software
+decoding, while the audio output is configured for AC-3, E-AC-3 or AAC.
+
+`-Y` applies only to tracks that would otherwise reach the receiver's AAC
+decoder (`A_AAC`, `A_AAC_LATM`), not to AAC already decoded in software
+(`-a`). HE-AAC is recognized by profile (HE, HE v2, MPEG-2 HE) or explicit
+SBR/PS in the AudioSpecificConfig; implicitly signalled SBR is not detected
+and stays untouched. A decoded sample rate that ADTS cannot express fails the
+encoder setup.
+
+The encoder is rebuilt when the decoded channel count, sample rate or sample
+format changes or another track is selected, and dropped after a seek. Output
+timestamps follow the encoded sample count and restart from the stream when
+they differ by more than 200 ms. A failed setup or encoder is logged once
+(`-L FFMPEG_SILENT:0`) and leaves that track silent until its format changes
+or a seek; playback continues. Stereo downmix (`-s`) is not applied to
+transcoded tracks.
+
+On a Dreambox, AC-3 and E-AC-3 tracks at a sample rate other than 48 kHz
+(mostly 44.1 kHz) are encoded to AC-3 5.1 at 48 kHz without an option, when
+they would go to the receiver's decoder (not with `-3`/`-e` software decoding
+or `-K`) and an AC-3 encoder is available. The box switches the rate of its
+HDMI output between 48 and 44.1 kHz with the stream, and soundbars and AV
+receivers on HDMI ARC stutter after the switch until the next seek, also at a
+clean start. `EP3_AC3_48K=0` turns this off. Track JSON stays as described
+above (`e` is `A_AC3`/`A_EAC3`, `sr` the rate of the source).
+
+---
+
+## 🔑 CENC keys per KID
+
+Streams in CENC (MP4, DASH, HLS fMP4) often use a key per track or per
+resolution. The keys are given per KID, not per stream.
+
+A KID or key (16 bytes) is taken in any of these forms, wherever the player
+reads one (`--key`, `dk`, `&5=`/`&6=`/`&7=`, `-5`/`-6`/`-7`, and `-f` with
+`decryption_keys`, `cenc_decryption_keys`, `decryption_key`,
+`cenc_decryption_key` and their `_video_key`/`_audio_key` variants):
+
+| Form | Example |
 | --- | --- |
-| `--dts-ac3` | Transcode DTS / DTS-HD to Dolby Digital (AC3 5.1). |
-| `--truehd-ac3` | Transcode TrueHD to Dolby Digital (AC3 5.1). |
-| `--dts-eac3` | Transcode DTS / DTS-HD to Dolby Digital + (E-AC3 5.1), or AC3 without an E-AC3 encoder. |
-| `--truehd-eac3` | Transcode TrueHD to Dolby Digital + (E-AC3 5.1), or AC3 without an E-AC3 encoder. |
-| `--heaac-aaclc` | Transcode HE-AAC to AAC-LC. |
+| 32 hex digits, upper or lower case | `00112233445566778899AABBCCDDEEFF` |
+| the same with `0x` ahead | `0x00112233445566778899aabbccddeeff` |
+| UUID, 8-4-4-4-12 hex digits | `00112233-4455-6677-8899-aabbccddeeff` |
+| 22 base64url characters, no padding (`kid`/`k` of a ClearKey JWK) | `ABEiM0RVZneImaq7zN3u_w` |
+| base64, 24 characters with `==` or 22 without | `ABEiM0RVZneImaq7zN3u/w==` |
 
-### Adaptive stream selection
+Both base64 alphabets are taken (`+` `/` and `-` `_` stand for the same
+bits); the 4 bits beyond the 16 bytes in the last character have to be 0.
+FFmpeg gets them as 32 lower case hex digits (`kid=key:kid=key` for the
+`*decryption_keys` options). Other lengths, other characters, dashes
+elsewhere, `0x` before a UUID, a single `=` or `=` elsewhere than the `==`
+at the end are not taken: `--key`, `dk` and `&5=` refuse them (the message
+names the forms), `-5`/`-6`/`-7` and `-f` hand them to FFmpeg unchanged. KIDs in the player's own messages
+(`DRM_KEY_REQ`, `DRM_KEY`, `DRM_KEY_DROP`) stay 32 lower case hex digits.
 
-| Option | Behavior |
+- `--key <kid>:<key>` (repeatable) preloads keys. They go
+  to FFmpeg as `decryption_keys` (mov), `cenc_decryption_keys` (DASH) and
+  `seg_format_options=decryption_keys=...` (HLS), which the patched FFmpeg
+  6.1 and 9.0 trees have. Nothing is asked. With `release/6.1-patched` MP4
+  plays, but its DASH demuxer reads almost nothing of an encrypted
+  SegmentTimeline stream even with the keys; DASH needs the 9.0 series.
+- `--key-request` lets FFmpeg ask for a KID it meets while playing and that
+  has no key yet (FFmpeg with the mov option `decryption_key_url`;
+  `"drmkey"` in `EPLAYER3_EXTENDED` is then 3, otherwise 1). The player
+  writes, once per KID:
+
+  ```
+  {"DRM_KEY_REQ":{"kid":"<32 hex>","type":"video","pssh":[{"system":"edef8ba9-79d6-4ace-a3c8-27dcd51d21ed","data":"<base64 of the pssh box>"}]}}
+  ```
+
+  `pssh` holds the pssh boxes for that KID from the MPD (`cenc:pssh`) and
+  the MP4 boxes, as whole boxes (what licence services take). The front end
+  answers on stdin with `dk <kid>:<key>` (several pairs per line are fine,
+  also keys it was not asked for) or `dk <kid>:-` for none. The demuxer waits
+  for it, at most `--key-timeout <s>` (default 10). The outcome is reported
+  as `{"DRM_KEY":{"kid":"...","sts":0}}` (key), `-1` (none) or `-2` (no
+  answer). After a request without an answer the front end is taken as not
+  answering: later KIDs have no key at once, nothing is waited for twice.
+  Without `--key-request` an unknown KID has no key at once, so a front end
+  that does not know the request never waits.
+- A track whose KID has no key (with an FFmpeg that has
+  `decryption_key_url`, or with no key given at all) does not end the
+  playback by itself:
+  - audio: the track is dropped (DASH stops fetching it) with
+    `{"DRM_KEY_DROP":{"kid":"...","type":"audio","id":<track>,"switch":<id or -1>}}`;
+    if the dropped track was playing (or about to be switched to) and
+    another audio track is not dropped, the player switches to it (an `a_c`
+    follows), otherwise it plays on without audio. A dropped track is never
+    switched to, also not with `a<id>` from the front end, and a switch that
+    is still pending to a track that has been dropped meanwhile is
+    cancelled;
+  - subtitles and other tracks: dropped the same way;
+  - video: `{"FF_ERROR":{"msg":"No key for KID <kid> (video)","code":-13}}`,
+    then the player stops the playback as with `q` (`PLAYBACK_STOP`, exit
+    code 0).
+- `-5`/`-6`/`-7` (one key for everything, video or audio) stay as they are.
+- OE-A compatibility: front ends written for the OE-Alliance exteplayer3
+  (its `getParamMPD()`) append options to a DASH url after `.mpd`, e.g.
+  `http://host/manifest.mpd&5=<key>`. The player takes each `&<digit>=`
+  with one of these digits after the first `.mpd`, up to the next `&`, and
+  cuts it out of the url before opening it; the rest of the url, also a
+  query string in front of or behind the options, stays as it is
+  (`manifest.mpd?a=b&5=<key>&c=d` opens `manifest.mpd?a=b&c=d`):
+  - `&0=<n>` / `&1=<n>`: the DASH options `video_rep_index` /
+    `audio_rep_index`; with an FFmpeg whose DASH demuxer does not have them
+    (`release/6.1-patched`) they are ignored with a log line;
+  - `&5=<key>`: a key for every KID, `&6=<key>` / `&7=<key>`: for the KIDs
+    of the video / the audio (32 hex digits or one of the other forms
+    above). These are default keys: a KID with a key of its own (`--key`, `dk`) has that one, and a KID a default
+    key applies to is not asked for with `--key-request`. With an FFmpeg that
+    has `decryption_key_url` the player answers them itself; otherwise they
+    go to FFmpeg as the DASH options the OE-A player sets
+    (`cenc_decryption_key`, `cenc_decryption_video_key`,
+    `cenc_decryption_audio_key`);
+  - `&8=<x>`: a front end parameter, taken off and ignored.
+
+  `EPLAYER3_EXTENDED` carries `"mpdopt":1`. One key per url does not fit
+  streams with a key per track or resolution: the per-KID way is `--key` and
+  `--key-request`.
+
+---
+
+## DreamNextGen build (Dreambox One/Two)
+
+The Amlogic Dreambox One and Two backend of the
+[OE-Alliance tree](https://github.com/oe-alliance/exteplayer3) is ported unchanged
+where possible. It exists only in builds with `-DHAVE_DREAMNEXTGEN` and
+`output/dream_video.c` added to the source list; without the define every
+source preprocesses to the same code as before.
+
+| Part | Behavior |
 | --- | --- |
-| `-Q 0/1/2` | Auto (default, highest advertised bandwidth), lowest or highest HLS/DASH quality. |
-| `-D 0/1` | Keep all HLS audio renditions (default), or prefer default audio. |
-| `-M WIDTHxHEIGHT` | Limit automatic H.264 selection; `0x0` disables the limit. HEVC is unaffected. |
-| `-P ID` | Select an explicit positive program ID, bypassing automatic selection limits. |
+| `output/dream_video.c` | Video through the private `VIDEO_SET_FRAME` API of `/dev/dvb/adapter0/video0`: MPEG-1/2, H.264, HEVC, MPEG-4 Part 2, DivX 3, VP9, AVS and AVS2 frames, paused output, position of the picture on screen. |
+| `output/linuxdvb_mipsel.c` | Audio through `/dev/dvb/adapter0/dreamaudio0` with kernel A/V sync for every stream. |
+| Writers | H.264 without PES header; AVS and AVS2 in plain PES with the sequence header ahead of I pictures. |
+| `main/exteplayer.c` | WMA, Vorbis, Opus and AMR always software decoded; `EPLAYER3_EXTENDED` reports `"trick":1`. |
+| Container/playback | `f<speed>`/`b<speed>` wind forwards and backwards on keyframes, `{"PLAYBACK_TRICK_END":{"dir":1}}` (`-1` backwards) when there is no keyframe beyond the last one; audio after a seek starts with the first video keyframe. |
 
-Quality selection chooses a representation; it does not change quality dynamically
-according to available bandwidth. HLS groups without default audio retain their
-available tracks.
+`exteplayer3_git.bb` builds it for `MACHINE` `dreamone` and `dreamtwo` (the
+define and `output/dream_video.c`), and so do the `aarch64` packages of the
+ipk release workflow.
 
-Use the companion [FFmpeg 6.1 patched branch](https://github.com/skyjet18/FFmpeg/tree/0da0223cd1add40eabaad04e1ce609f05670a1de).
-The player uses its `hls_quality_mode`, `hls_audio_default_only` and
-`dash_subtitle_default_discard` AVOptions. The OpenATV ffmpeg-ext recipe supplies
-this version together with the downstream decoder and decryption changes.
+In this tree the build is only compiled and linked: `tests/run.sh` builds it
+on the host, the receiver behavior was tested in the OE-Alliance tree only.
 
-### Optional decoded PCM export
+---
 
-`-K` enables `/tmp/exteplayer3_pcm_audio.fifo`; export is disabled by default.
-Tracks being transcoded (DTS/TrueHD to AC3/E-AC3, HE-AAC to AAC-LC) are not exported.
-It forces software decoding for the supported audio codecs and therefore uses
-additional CPU time. Normal playback continues if the consumer is absent or slow.
+## 🧪 Native validation
 
-Each chunk starts with a 16-byte little-endian header: magic `0x504d4341`
-(bytes `ACMP`), sample rate (32 bits), channel count (16 bits), sample depth
-(16 bits, always 16), and payload size (32 bits). The payload is interleaved
-signed S16LE audio. Rate and channel count can change between chunks.
+The workflow `Tests` runs all of these on every push and pull request, once
+with FFmpeg 6.1 and once with FFmpeg 9. Single tests can be run by hand:
+Actions → Tests → Run workflow, `tests` = step ids from its result table,
+comma separated (e.g. `hls_switch-timing`; `hls_switch` for all its modes,
+`ffmpeg` for the companion tests of the FFmpeg tree). Only the host player
+variants those tests need are built, so such a run takes minutes.
 
-Header and payload are written atomically in complete sample frames within
-`PIPE_BUF`. Consumers must read complete chunks and tolerate dropped chunks.
-Use one reader; multiple readers divide the bytes instead of receiving copies.
-Only a FIFO owned by the player user is accepted; newly created FIFOs use mode
-0600. The FIFO remains on disk between sessions and must not be replaced while
-playback is active.
+Set `FFMPEG_SOURCE` to the companion source tree and `FFMPEG_BUILD` to its
+configured, built out-of-tree native directory:
+
+```sh
+export FFMPEG_SOURCE=/path/to/FFmpeg
+export FFMPEG_BUILD=/path/to/ffmpeg-build
+export FFMPEG_EXTRA_LIBS="-lxml2" # plus any other dependencies of this static build
+sh tests/run.sh
+sh tests/build.sh /path/to/test-output/exteplayer3-host
+python3 tests/integration.py \
+  --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg"
+python3 tests/cover.py \
+  --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg"
+python3 tests/chapters.py \
+  --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg"
+make -C "$FFMPEG_BUILD" fate-hls-selection fate-mpegts-probe fate-dash-live
+make -C "$FFMPEG_BUILD" libavformat/tests/dash_http
+python3 "$FFMPEG_SOURCE/tests/dash_http.py" \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --driver "$FFMPEG_BUILD/libavformat/tests/dash_http"
+make -C "$FFMPEG_BUILD" libavformat/tests/hls_http
+python3 "$FFMPEG_SOURCE/tests/hls_http.py" \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --driver "$FFMPEG_BUILD/libavformat/tests/hls_http"
+```
+
+The mixed-TS HLS fixture generates three distinguishable AAC tones, an embedded
+audio/video variant and two external TS audio renditions. It tests repeated
+switches, VOD seeks, suspended-playlist recovery and sliding live windows,
+including embedded and external initial audio selections. VOD checks allow up
+to one two-second segment of seek preroll; live first-packet displacement is
+limited to 250 ms. Source-packet fingerprints also require timestamps to stay
+within 100 ms of the original media, not merely agree after rewriting.
+Rendition sequence numbers are not used as cross-playlist timestamps.
+Add `--realtime` to the companion HTTP command for clock-driven rolling windows,
+nonzero initial windows, reactivation after the previous window expires, and a
+deliberate 140 ms source offset on one audio rendition. The driver now uses
+normal live startup, rather than forcing `live_start_index=0`.
+
+For actual decoded-audio switching checks, build a host player with the isolated
+`PCM_EXPORT_PATH` described below, then run:
+
+```sh
+FFMPEG_SOURCE="$FFMPEG_SOURCE" python3 tests/hls_switch.py \
+  --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --pcm-fifo /path/to/isolated-test.fifo
+```
+
+This tests the real `a<ID>` stdin path with live sync off/on. Each selection must
+produce at least 250 ms of contiguous selected-tone PCM within five seconds,
+retain presentation progress and recover when returning to the original track.
+The host output is not a test of physical receiver/DVB audio hardware.
+
+The original PCM-only fixture did not cover duplicate IDs under legacy format
+aliases or the normal compressed-audio writer. The expanded fixture supports
+`--multiple` (three qualities), `--video-first`, `--quality auto|lowest|all`
+(`all` probes every variant before program selection), `--case vod|live`,
+and `--fmp4` for raw-AAC framing regression checks. Tests disable track caching
+and recheck video/audio IDs after real manager refreshes.
+
+To validate normal compressed AAC output without `-K`, build with a new isolated
+capture file. `HOST_HLS_ALIAS=1` additionally enables a host-only linker wrapper
+which reports the same demuxer as `hls,applehttp`; it reproduced the duplicate-ID
+failure on the preceding player commit. It is not evidence that a particular
+receiver reports that format name.
+
+```sh
+HOST_AUDIO_OUTPUT=/path/to/test-output/audio.pes HOST_HLS_ALIAS=1 \
+  sh tests/build.sh /path/to/test-output/exteplayer3-capture
+FFMPEG_SOURCE="$FFMPEG_SOURCE" python3 tests/hls_switch.py \
+  --player /path/to/test-output/exteplayer3-capture \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --pcm-fifo /path/to/test-output/audio.fifo \
+  --audio-output /path/to/test-output/audio.pes \
+  --mode compressed --multiple --video-first --quality all
+```
+
+The capture file must not already exist. The test removes its own capture
+between sessions, parses audio PES packets and decodes the captured AAC to
+identify the selected tone. This additionally requires the native FFmpeg
+S16LE muxer and PCM S16LE encoder. `--mode software` tests explicit `-a 3`
+without `-K`, reading the PCM writer's sample-format header and sample payload
+from PES. `--mode export` (default) retains the FIFO test, which requires the
+same isolated `PCM_EXPORT_PATH` at build and runtime. Do not run fixtures
+concurrently against the same compiled FIFO or capture path.
+
+Tone identity alone does **not** establish live A/V synchronization. For
+timing-aware MPEG-TS coverage, capture video PES too:
+
+```sh
+HOST_AUDIO_OUTPUT=/path/to/test-output/audio.pes \
+HOST_VIDEO_OUTPUT=/path/to/test-output/video.pes HOST_HLS_ALIAS=1 \
+  sh tests/build.sh /path/to/test-output/exteplayer3-capture
+FFMPEG_SOURCE="$FFMPEG_SOURCE" python3 tests/hls_switch.py \
+  --player /path/to/test-output/exteplayer3-capture \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --pcm-fifo /path/to/test-output/audio.fifo \
+  --audio-output /path/to/test-output/audio.pes \
+  --video-output /path/to/test-output/video.pes \
+  --timing-driver "$FFMPEG_BUILD/libavformat/tests/hls_http" \
+  --mode compressed --case live --multiple --video-first --quality all \
+  --sync default --backpressure
+```
+
+Both output paths must be isolated and absent. This generates time-varying media,
+matches actual audio/video PES payloads to their source timestamps, and checks
+one shared PTS mapping within 100 ms (preserving the intentional source offset).
+After one second the latest emitted A/V PTS must also stay within 250 ms.
+Selected audio must recover within one second; video source frames must advance
+without a jump or reset. It starts within an already populated live window and
+holds the initial selection until inactive windows expire before switching.
+With both outputs it first plays a local TS whose audio PES timestamps are
+moved 108 seconds before the video (which counts from 21.6 hours); both
+captures must start together and advance without a jump.
+`--sync default` leaves `EP3_LIVE_SYNC` unset; `--sync 0|1` tests explicit modes,
+and omitting it tests both. `--initial 0|1` focuses embedded/external startup.
+`--backpressure` creates a bounded nonblocking audio FIFO instead of a regular
+capture file, fills it, checks recovery after draining, and quits while it is
+full again. This exercises the real writer retry/cancellation path, not a DVB
+driver or physical display. Existing software/export checks remain separate.
+
+The CPU time of a waiting player is measured with the same two isolated, absent
+output paths compiled in; they become FIFOs that the test stops draining while
+the player is paused, as paused decoders take no more data:
+
+```sh
+python3 tests/idle_cpu.py \
+  --player /path/to/test-output/exteplayer3-capture \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --audio-output /path/to/test-output/audio.pes \
+  --video-output /path/to/test-output/video.pes
+```
+
+It reports CPU time and voluntary context switches playing and paused (without
+and with `-b 1`, and with `EP3_OUTPUT_PACING_MS`), and fails when a paused
+player wakes up more than 150 times in five seconds, or when data does not
+flow again soon after the continue or the quit takes long.
+
+The UBSan (partly ASan or LeakSanitizer) harnesses of `tests/run.sh` cover,
+among others, manager ownership/locking, custom IO and selection,
+PES/H.264/writev, bounded DVB busy-open and PCM recovery, timestamp continuity,
+atomic FIFO framing/backpressure/reconnect/path validation, and playback
+seek/switch ordering when decoder reset erases the reported position.
+
+The full host build uses fake DVB output directed to `/dev/null` and disables
+the production termination socket. It also builds an HTTP-seek helper.
+The host-only build namespaces an old bundled FFmpeg table symbol to avoid
+a collision with modern static libavcodec. It does not modify receiver builds.
+The BitBake recipe `exteplayer3_git.bb` compiles `main/`, `tools/`,
+`manager/`, `playback/`, `output/writer/common/`, the bundled `external/`
+sources and, except on SH4, `output/writer/mipsel/` with shell globs, so new
+source files there need no recipe change. The files of `container/`, of the
+top of `output/` and the SH4 writers are listed one by one (`container/container_ffmpeg.c` includes its
+helpers such as `output_pacing.c` and `cc_ffmpeg.c` itself); for `dreamone` and
+`dreamtwo` it adds `output/dream_video.c` and `-DHAVE_DREAMNEXTGEN`. Other external
+build recipes with explicit source lists must include new files such as
+`tools/pcm_export.c`.
+
+The integration fixture needs FFmpeg's `file/http/tcp` protocols, MPEG-TS/HLS,
+MOV/MP4, DASH, Matroska, rawvideo, S16LE and SRT demuxers, MPEG-TS/MP4/DASH/Matroska muxers,
+rawvideo/PCM/AAC/MPEG-2/subrip/movtext decoders, MPEG-2/AAC/movtext encoders and
+the `aresample` filter and libxml2. Tests generate their own media and loopback HTTP server.
+They verify actual aligned HTTP Range requests and approximate seek position,
+which HLS variant is fetched, strict CLI parsing, full radio JSON, embedded
+MP4/MKV forced-subtitle selection/disable, static single-file DASH startup and
+audio switching with live sync both off and on, and bounded host shutdown.
+The https cases (CA bundle fallback for HLS and `-x`, `-f ca_file` for HLS
+segments, an explicit `SSL_CERT_FILE` kept, verification kept) need an FFmpeg
+with the `https` protocol over OpenSSL that verifies by default (FFmpeg 9) and
+the `openssl` command; otherwise they are reported as `SKIP`. `tests/ca_bundle_test.c` (in `tests/run.sh`)
+checks the choice of the file on its own.
+The closed caption cases also need the MPEG video, H.264 and SCC demuxers, the
+lavfi device with the `movie` filter, the ccaption decoder and the SRT encoder.
+
+The companion HTTP fixture additionally needs DASH demuxing/muxing and libxml2.
+It verifies exact fragment retry counts, delay/cancellation bounds, shared media
+origin during delayed multi-representation startup, progress beyond a rotating
+short manifest's original window, byte-range versus standalone downloads, and
+A/V -> video-only ad -> A/V HLS playback. An additional single-file VOD fixture
+uses MPEG-2 video and two AAC audio tracks to verify fractional seeks while an
+audio demuxer is closed, backward seeks and direct audio reactivation. It does
+not certify receiver HEVC/E-AC-3 output, A/V lip sync or arbitrary provider
+manifest changes.
+The HLS FATE test separately exercises index/type changes, ID3 insertion, multiple
+audio identities, late codec probing, ambiguous/duplicate IDs, codec/time-base
+updates and seeks/discard checks while a selected track is absent.
+
+For end-to-end PCM testing, compile an **isolated, unused** FIFO path into the
+test binary, then pass that same path to the integration fixture:
+
+```sh
+export CFLAGS='-DPCM_EXPORT_PATH="/path/to/test-output/audio.fifo"'
+sh tests/build.sh /path/to/test-output/exteplayer3-host
+python3 tests/integration.py --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" --pcm-fifo /path/to/test-output/audio.fifo
+```
+
+The integration test creates and removes that FIFO. Never use a production
+endpoint. It checks software decoding despite a later `-a 0`, nonzero PCM,
+header fields and complete payload framing. Full-player ASan/UBSan runs also
+pass with `-fsanitize=address,undefined -fno-omit-frame-pointer` in `CFLAGS`
+and `ASAN_OPTIONS=detect_leaks=0`; this does not assert leak-free legacy teardown.
+The isolated HTTP helper excludes ASan global registration, which otherwise
+retains unrelated player command handlers; it retains UBSan instrumentation.
+
+Known unrelated baseline: the existing FFmpeg `fate-mpegtsenc` AAC-dejitter
+expectations fail against the unchanged muxer. All three companion FATE targets
+and the generated-media HTTP fixture pass; this series does not alter that muxer
+behavior.
+
+---
+
+## 🔉 DD+ passthrough restart on VU+ Ultimo 4K and Duo 4K SE
+
+On these two models the first E-AC-3 start through the playpump stays silent
+when the receiver passes DD+ on as a bitstream, while an audio switch made
+afterwards gives sound. The non-SH4 DVB backend therefore follows that start
+once by what an audio switch does, without changing the track: 100 ms after
+the first DD+ packet, the command loop seeks the input by 0 s where a switch
+would (with `isSeeking` set) and restarts the audio decoder (`OUTPUT_SWITCH`).
+It is armed only at the first audio start of the process, for the E-AC-3
+bitstream writer (software-decoded DD+ uses the PCM writer), outside DASH,
+on a VU+ whose `/proc/stb/info/vumodel` is `ultimo4k` or `duo4kse` and whose
+`/proc/stb/audio/ac3` is `passthrough`. Everywhere else nothing changes: the
+command loop keeps its 1 s idle wait. While the restart is due it polls every
+20 ms; a first DD+ packet later than 5 s gets its restart with the next 1 s
+poll. An audio switch or stop before that point cancels it; a loop restart of
+the file does not arm it again.
+
+`EP3_EAC3_RESTART=1` arms it on any receiver and `EP3_EAC3_RESTART=0` never;
+only these exact values are honored, anything else keeps the model and mode
+test. Known limitation: a seek sent within about 100 ms after the first DD+
+packet can be overtaken by the restart's own 0 s seek and lose its target.
+`-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` logs
+`DD+ passthrough start, audio restart armed`.
+
+Under the same conditions (model and mode, or `EP3_EAC3_RESTART=1`, outside
+DASH), setting the DD+ bypass mode again while the decoder runs DD+
+passthrough silences the HDMI output. So once an audio switch (the restart
+above included) has started the decoder in DD+ bypass mode, a later switch to
+another track written as E-AC-3 (native E-AC-3, or DTS/TrueHD transcoded with
+`-E`, `--dts-eac3`, `--truehd-eac3`) does not stop the decoder or set the
+mode again: only its buffer is cleared, a paused decoder stays paused, and the
+debug log shows `DD+ -> DD+ switch, decoder kept running`. A switch to any
+other codec, and the first switch after an audio start or stop, still restart
+the decoder in full.
+
+---
+
+## 🧬 Backport provenance and exclusions
+
+Reference: [boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
+`exteplayer3-build/src`, compared through `2716903d48a4`.
+The player baseline was `9703eb5`; the FFmpeg baseline was `3fcbef0461`.
+The reference's player history was inspected, including later corrections
+rather than just copying its final tree:
+
+| Reference history | Adaptation |
+|---|---|
+| `ca4c076`, `29d96ba`, `eb75eb1` | Track-context refresh, lock ordering, EOF/read recovery, responsive shutdown and AV continuity. |
+| `f925bcc`, `fc41d30` | Optional PES DTS, H.264 parameter-set refresh and complete partial-write handling. |
+| `492b509`, `70f5c4c`, `94be6a8` | Duration/HTTP-TS seeks, PCM export and PCM reset/rearming. |
+| `ea4dae6`, `7c54555`, `38e9389`, `75fe304` | Highest-bandwidth Auto, native HLS selection, DASH selection and unknown dimensions. |
+| `ab3cd73`, `191ae3f`, `d09423c`, `40bbdd2` | Radio/forced-subtitle metadata, selection/discard and bounded DVB busy-open retry. |
+| `6a94983` and earlier timestamp follow-ups | Compact, testable discontinuity handling, cached offsets, shared AV delta and pause-aware recovery. |
+
+Intentional exclusions/adaptations:
+
+- Keep target version 183, AAC dejitter (`-j`), multi-SPS/PPS parsing, MOV_TEXT,
+  DRM-header and FFmpeg compatibility work. Existing `.m2ts`/`.mts` support
+  needs no duplicate patch.
+- Preserve the local FFmpeg CENC support, shared DASH timestamp/start origin,
+  timeline-reload position repair, HTTP segment seekability/reuse/redirects,
+  HLS discontinuity processing and EVENT duration logic. The older
+  `ffmpeg-skyjet183-upstream-sync`, DASH AV-sync, CENC and HTTP-options patches
+  must not be applied wholesale.
+- Adapt the short-buffer and duration-template live-edge fixes to local
+  media-time selection; do not assume independent rendition counters align.
+  Keep the existing common startup point and interruptible refresh logic rather
+  than importing a header-wide manifest freeze or repeated fixed-wait loop.
+- Do not import HLS starvation scheduling based on cross-rendition sequence
+  ordering, experimental forced fairness or `/tmp` diagnostic-file machinery.
+  Local HLS already defaults `max_reload` to 100; no replacement is necessary.
+- Sparse DASH subtitles are discarded only when the player opts in, not as a
+  global FFmpeg default. H.264 levels are not rewritten outside MIPS builds
+  (`EP3_H264_LEVEL41` above); the optional resolution
+  limit replaces the fork's receiver-specific hard limit.
+- FIFO framing and `writev` were repaired rather than copying the reference's
+  partial-frame behavior or silent 128-vector truncation.
+- Full local-file tests also found an existing `sizeof`/initialization typo in
+  custom IO. It is fixed, and output loops reacquire borrowed manager tracks
+  after callbacks that temporarily release the container lock.
+- No VTi packaging scripts, receiver paths, glibc ABI shims or serviceapp/UI
+  changes are imported. These commits do not build or install an IPK.
+
+### 🔍 Complete FFmpeg patch-file audit
+
+All 13 `exteplayer3-build/ffmpeg-*.patch` files were compared hunk by hunk at the
+same reference revision. Existing local improvements were retained rather than
+replaced with older fork implementations:
+
+| Reference patch | Disposition |
+|---|---|
+| `ffmpeg-cenc-drm-support.patch` | MOV KID/default keys, DASH propagation and loopback DRM support already exist. Do not copy key-value logging or per-track timestamp zeroing. |
+| `ffmpeg-dash-avsync-fix.patch` | Existing shared timestamp origin and timeline reload-position handling supersede it. `89c9657d5a` also uses that shared origin for seeks. |
+| `ffmpeg-dash-header-parsing-manifest-freeze-fix.patch` | Not imported: delayed-header/rotating-window HTTP tests pass without freezing refresh, including progression beyond the original window. This is representative coverage, not a proof for every provider. |
+| `ffmpeg-dash-http-options.patch` | Existing segment seekability and persistent/reuse handling cover its useful behavior. HTTP tests verify standalone downloads and distinct single-file initialization/media ranges. |
+| `ffmpeg-dash-live-edge-delay-fix.patch` | Initial live delay adapted in `6d59900cf0`; bounded transient media-open retries added globally in `89c9657d5a`. Do not copy repeated fixed manifest waits. |
+| `ffmpeg-dash-short-buffer-startup-fix.patch` | Adapted in `0ebaa163bc`, preserving a common media-time start instead of aligning unrelated segment counters. |
+| `ffmpeg-dash-subtitle-starvation-fix.patch` | `0ebaa163bc` plus player `c4b8db6`; initial sparse-subtitle discard remains opt-in for generic FFmpeg callers. |
+| `ffmpeg-eac3-stream-type-fix.patch` | `f9924289f9`, with native PMT/probe regression coverage. |
+| `ffmpeg-hls-discontinuity-starvation-fix.patch` | Identity-preserving association adapted in `f7e8840943`, including absent selected tracks and seeks. Existing discontinuity timestamp normalization retained; no type-only merging, recursive packet skipping, cross-rendition sequence ordering or forced fairness. |
+| `ffmpeg-hls-native-preselect.patch` | `8a5ed2f3aa`, without a fixed 128-rendition cap or reuse of the broken-playlist flag. |
+| `ffmpeg-hls-sequence-wrap-resync-fix.patch` | `8a5ed2f3aa`, preserving bounded tolerance and VOD behavior. |
+| `ffmpeg-hls-sequence-wrap-resync-fix-6.1.1.patch` | Same useful resync behavior as the previous patch, not an additional feature. |
+| `ffmpeg-skyjet183-upstream-sync.patch` | XML ampersand handling, oldest-valid segment, EVENT duration and WebVTT suffix handling already exist. Remaining fractional seek precision and related time-unit fixes adapted in `89c9657d5a`. |
+
+No additional player runtime option is needed for these follow-up companions.
+Native FATE, actual HTTP fixtures, all six player UBSan harnesses and the complete
+ASan/UBSan player integration suite pass with the updated libraries. Receiver
+and cross-toolchain limitations below still apply.
+
+---
+
+## 🛑 Stop on signals and on the end of the parent
+
+`SIGINT`, `SIGTERM` and `SIGHUP` stop the player the way the `q` command
+does: `PLAYBACK_STOP` (reported as `{"PLAYBACK_STOP":{"sts":0}}`), the stop
+of the decoders, `OUTPUT_CLOSE`, exit code 0. Before, the signals ended the
+process at once, with the decoders still running. The signals are blocked in
+all threads and taken by one thread with `sigtimedwait()`; the command loop
+reads the request as `q`. During the open of the input that is the `q` of that
+phase as well (exit code 11). A second signal, or a stop that takes more than
+5 s, ends the process at once (exit code 128 + signal). `SIGPIPE` is ignored:
+a front end that is gone is found through the end of the command pipe.
+
+Before that exit the DVB decoders that still run are stopped and their
+devices closed (`AUDIO_STOP`/`VIDEO_STOP` with the buffer clear and the
+source back to the demux, as the normal stop does), so that the end of the
+process does not leave a running decoder to the driver: on Broadcom boxes that
+path has crashed the kernel. It waits for no thread of the player: the output
+lock is only tried, a device the normal stop has closed already is not
+touched, the video device only after the end of the event thread's poll, and
+the whole cleanup gets at most 1 s, then the process ends as before, also
+when an ioctl of the driver does not return. stdout shows the result,
+e.g. `DVB cleanup before the exit: decoders stopped, devices closed` (or
+`a device left to the end of the process`, `not done within the wait`).
+sh4 boxes leave the devices to the end of the process as before.
+
+`q` during the open of the input (also a server that accepts the connection
+and then stops answering, in `avformat_open_input()` or
+`avformat_find_stream_info()`, an HLS playlist or segment) is reported to the
+interrupt callback of the open, so FFmpeg leaves its wait on the network; the
+player ends when the open thread has returned, with exit code 11 and without
+`FF_ERROR` or `PLAYBACK_OPEN`. Exit code 11 is a normal exit, not `SIGSEGV`
+(a process that a signal ends has no exit code; shells show 128 + signal).
+Before, the open thread was cancelled and `exit()` ran beside it while it was
+still inside FFmpeg. An open that the callback cannot end (name resolution, a
+FIFO without a writer) is cancelled after 2 s, as before, with stdout
+`open not ended 2000 ms after q, cancelled`.
+
+The parent death signal (`PR_SET_PDEATHSIG`) was `SIGKILL`. It belongs to the
+thread that started the player, not to its process (see prctl(2)), so it also
+killed the player when only that thread ended. It is `SIGUSR2` now, which
+stops the player only when `getppid()` has changed. The parent is also checked
+every second, which finds a parent that ended before the signal was set up.
+
+---
+
+## 🔧 HiSilicon receivers
+
+A receiver counts as HiSilicon (`STB_HISILICON`) when, after the Dreambox and
+VU+ tests, the device-tree node `soc/hisilicon_clock` exists, or one of the
+vendor SDK paths `/proc/hisi`, `/dev/hi_mem`, `/dev/hi_dmx`,
+`/sys/module/hi_media` or the image's `/usr/bin/hihalt` exists, or the first line of `/proc/stb/info/chipset`
+starts with `hi3` or contains `hisi` (case-insensitive, e.g. `hi3798mv200`).
+Before, only the device-tree node was tested and other HiSilicon receivers
+were treated as generic, without the HiSilicon handling of AAC, MJPEG, VP9
+and Vorbis/Opus. Dreambox and VU+ detection is unchanged.
+
+The DVB devices of these receivers are emulated on top of the vendor SDK and
+may never report that they are writable. With the RAM buffer (`-b`) the
+buffering thread therefore writes to them first and waits for the device or
+its wake-up pipe, at most 50 ms, only when the device takes nothing. Other
+receivers keep waiting for the device before writing.
+
+`EP3_OUTPUT_PACING_MS=<ms>` enables an optional software playback clock, for
+receivers whose devices accept everything so that picture and sound run too
+fast. Unset, empty, `0` or negative leaves it off (the default, on every
+receiver). A positive value holds each video and audio chunk before its write
+until its PTS (for video its DTS, which grows in decoding order while the PTS
+of B-frames goes back and forth) is at most `<ms>` ahead of real time (audio 500 ms more);
+subtitles are not held. The clock is anchored at the first chunk, stands during a pause, and is
+anchored again after a seek, after a PTS jump of a stream (more than 2 s back
+or 10 s forward), and when a chunk is more than 2 s beyond the lead or 10 s
+late; trick play is not paced, and a stop or seek ends the wait. With `-b` it
+holds the filling of the RAM buffer. Values in the range of the decoder
+buffer (e.g. `1000`) are a starting point; the setting is read once.
+
+Further HiSilicon switches, all off by default and only effective on a
+HiSilicon receiver with the value `1`. They come from HiSilicon forks and
+are untested here; they are meant for testers of such receivers:
+
+- `EP3_HISI_AV_SYNC=1`: the hardware A/V sync of the playback
+  (`AUDIO_SET_AV_SYNC`) also for streams that are not DASH; otherwise only
+  DASH gets it, as on other receivers.
+- `EP3_HISI_NO_CLEAR=1`: no `VIDEO_CLEAR_BUFFER` / `AUDIO_CLEAR_BUFFER` when
+  the devices are opened and when the video starts; the clears of a seek, a
+  track switch or a stop stay.
+
+From the same fork, not tied to the receiver type and also untested:
+`EP3_LPCM_FRAMES=2..12` puts that many DVD LPCM frames (150 PTS ticks each)
+into one PES packet of the LPCM output (`-l`), with the first access unit
+pointer 3, instead of one frame per packet. Unset or another value: one
+frame, as before; the setting is read when the LPCM writer sets up its
+buffers (first packet, new sample rate or channel count).
+
+---
+
+## ✅ Receiver validation still required
+
+Host tests do **not** certify ARMv7/AArch64/MIPS/SH4 cross-builds, DVB driver behavior,
+decoder compatibility, audible lip sync, PCM CPU load or long-running live
+provider/SSAI behavior. Before deployment, check on representative receivers:
+
+- HLS/DASH startup and explicit quality/program selection, separate audio,
+  short live windows, EVENT playlists and discontinuity/ad transitions.
+- The DD+ passthrough restart has only been forced with `EP3_EAC3_RESTART=1`
+  on a VU+ Uno 4K SE (openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver):
+  harmless there, DD+ with sound. Still open: sound from the first E-AC-3
+  start on VU+ Ultimo 4K and Duo 4K SE with `/proc/stb/audio/ac3` set to
+  `passthrough`, no audible gap or A/V offset from the restart there, a
+  seek right after the start, and sound after a DD+ -> DD+ track switch
+  that keeps the decoder running.
+- Natural AV offsets, 33-bit PTS wrap, reordered video, audio/video clock
+  resets, long stalls, pause/resume, repeated seeks and stream switches.
+- The HiSilicon handling has not been validated on a receiver: detection on
+  HiSilicon receivers without the device-tree node (and none elsewhere),
+  `-b` playback that does not stall, and `EP3_OUTPUT_PACING_MS` on a receiver
+  that plays too fast: speed, lip sync, pause, seek and trick play. The
+  opt-in switches have not run on any receiver: `EP3_HISI_AV_SYNC` (lip sync
+  of HLS, TS and MP4 with it, also after seeks and audio switches),
+  `EP3_HISI_NO_CLEAR` (start of the picture and sound, no old picture of an
+  earlier playback), `EP3_LPCM_FRAMES` (LPCM with `-l`: sound without
+  crackles or gaps, lip sync, seeks).
+- A source whose audio and video count from different origins (first
+  timestamps more than 60 seconds apart): audible audio and its lip sync.
+- The DTS-HD bypass mode has been checked on one receiver only (VU+ Uno 4K
+  SE, openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver): it has no
+  `/proc/stb/audio/dtshd`; in DTS-HD mode the AV receiver shows DTS-HD MA,
+  without it DTS (core). With a TV without any DTS support connected
+  directly (openATV 8.0.1, FFmpeg 9) the DTS-HD MA 7.1 track plays
+  with the same sound in both modes. The VU+ Ultimo 4K and Duo 4K SE use the
+  mode in OpenBH and OpenViX and have not been checked here. Still open: a box
+  with `/proc/stb/audio/dtshd`, DTS:X, plain DTS after switching to a
+  core-only track, and `EP3_DTS_HD_MODE=1` on other chipsets.
+- AAC dejitter and passthrough versus software PCM; DTS/PES B-frame output,
+  initial/changed H.264 SPS/PPS, busy decoder devices and stop latency.
+- DTS core-frame padding has been checked on one receiver only (VU+ Uno 4K
+  SE, openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver): 2013-byte
+  DVD-style frames are silent with `EP3_DTS_PAD=0` and play as DTS with the
+  padding, 1006-byte frames play. Still open: HiSilicon, GigaBlue and other
+  Broadcom chipsets (padded by default like in the dvbmediasink of
+  oe-alliance), DTS-ES and 96/24 frames whose extension size is raised, and
+  unchanged output for DTS-HD tracks.
+- MP4/MKV/adaptive subtitle selection and disabling, forced flags, ICY and
+  metadata clearing across stations; retained DRM/MOV_TEXT behavior.
+- Closed captions (CC1) on a receiver: whether its decoder buffer always
+  holds more than the 500 ms pieces of a caption, and real live channels.
+- The H.264 level limit has only been forced with `EP3_H264_LEVEL41=1` on an
+  ARM box (VU+ Uno 4K SE, openATV 8.0.2, ffmpeg-ext 6.1.1): level 4.2 is
+  written as 4.1 and the picture is unchanged. Still open: 1080p50/60
+  (level 4.2) H.264 on MIPS boxes with and without `EP3_H264_LEVEL41=0`.
+- The "Constrained High" flags were measured with files on one receiver (VU+
+  Uno 4K SE, openATV): a live HLS stream (High, constraint byte `0x0C`, level
+  4.0, CAVLC) played sound only; the same TS with only that byte set to `0x00`
+  in every SPS showed the picture at 720p30 and 1080p60, a level of 4.2
+  instead of 4.0 did not help. With the writer change the player shows the
+  picture on the unchanged files (720p30, 1080p60) and on the live stream
+  (1080p60 HLS, played directly). Still open: MIPS and HiSilicon receivers.
+- `-K` off/on CPU cost, export consumers joining/leaving, slow readers,
+  format changes, seeks and audio switching without decoder silence.
+- `-Z`/`-X`/`-E`/`-Y` transcoding has been checked on one receiver only (VU+
+  Uno 4K SE, openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver): `-Z` and
+  `-X` give Dolby Digital with sound, `-Z -E` Dolby Digital Plus, and with
+  `--dts-eac3 --truehd-ac3` each source gets its own target; `-Y` plays;
+  seeks and pause/continue keep the sound. Still open: other chipsets, CPU
+  cost on weaker boxes, a measured lip sync, track switches and mid-stream
+  format changes.
+
+---
+
+## 🧾 Command line options
+
+```
+exteplayer3 [options] <uri>
+```
+
+A uri without `://` is opened as `file://<uri>`. `iptv://<file>` (for the uri,
+`-x` and `-F`) reads the uri from that file, without its trailing newline.
+An `http://` or `https://` uri that contains `&suburi=` is cut there when no
+`-x` is given: the rest is opened as the separate audio uri, for front ends
+that cannot pass `-x`. Messages (JSON) go to stderr, diagnostics to stdout.
+A missing uri, an unknown option or an invalid value prints the usage text to
+stdout and ends the player with exit code 1.
+
+| Option | Meaning |
+|---|---|
+| `-a 0..3` | AAC software decoding, bit mask: `1` AAC (ADTS), `2` AAC LATM |
+| `-3`, `-e`, `-d`, `-m`, `-w` | AC-3, E-AC-3, DTS, MP3, WMA (WMA2, WMA Pro) software decoding |
+| `-A 0\|1`, `-V 0\|1`, `-U 0\|1` | AMR, Vorbis, Opus software decoding off/on |
+| `-l` | software decoded audio is written as LPCM instead of WAV PCM |
+| `-s` | software decoded audio is mixed down to stereo; without it a source of more than 8 channels (AC-4 7.1.4) is mixed down to 7.1, the most the PCM writers take. AC-4 is always software decoded |
+| `-r` | PCM tracks go to the PCM writer as they are (`A_PCM`), without software decoding and resampling |
+| `-j ms` | PTS dejitter threshold of AAC, AAC LATM and DTS written as bitstream, default 200, `0` off |
+| `-K` | decoded PCM export, see [Optional decoded PCM export](#-optional-decoded-pcm-export) |
+| `-Z`, `-X`, `-E`, `-Y`, `--dts-ac3`, `--truehd-ac3`, `--dts-eac3`, `--truehd-eac3`, `--heaac-aaclc` | audio transcoding, see [Optional audio transcoding](#-optional-audio-transcoding) |
+| `--audio-channel left\|stereo\|right` | dual mono channel at the start (`0\|1\|2`, default stereo) |
+| `--start seconds` | start position, see [Start position](#-start-position) |
+| `--cover path` | embedded cover of the file written to `path`, message `cover`, see [Embedded cover](#-embedded-cover) |
+| `-t index`, `-9 index` | audio and subtitle track switched on at the start, as a position in `a_l` and `s_l` (sent as `ai<index>` and `si<index>`) |
+| `-Q 0\|1\|2`, `-D 0\|1`, `-M WIDTHxHEIGHT` | HLS/DASH quality, default audio only, H.264 resolution limit, see [Adaptive playback](#-adaptive-playback-and-metadata) |
+| `-P id` | program ID of a multi-program stream (also an HLS program) |
+| `-0 index`, `-1 index` | MPEG-DASH video and audio representation index (`video_rep_index`, `audio_rep_index`) |
+| `-5 key`, `-6 key`, `-7 key` | CENC decryption key for all streams, for video, for audio (`cenc_decryption_key`, `cenc_decryption_video_key`, `cenc_decryption_audio_key`) |
+| `--key kid:key` | CENC key of a KID, 32 hex digits (also `0x` hex, UUID, base64 or base64url) each, repeatable (MP4, DASH, HLS fMP4), see [CENC keys per KID](#-cenc-keys-per-kid) |
+| `--key-request` | ask the front end for the key of other KIDs: `DRM_KEY_REQ`, answer on stdin `dk` (`"drmkey"` & 2: only with an FFmpeg that has `decryption_key_url`) |
+| `--key-timeout s` | how long `--key-request` waits for the answer, default 10 |
+| `<url>.mpd&5=key` | OE-A options after `.mpd` in the url (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`), taken off it before the open, see [CENC keys per KID](#-cenc-keys-per-kid) |
+| `-x uri` | separate audio uri |
+| `-h headers` | HTTP headers, `"Name: value\r\nName: value\r\n"` |
+| `-u user-agent` | HTTP User-Agent |
+| `-c cookies` | sets the FFmpeg `cookies` option; the usage text recommends `-h` instead |
+| `-f name=value` | any other FFmpeg option; `ca_file`/`cafile` also sets `SSL_CERT_FILE`, see [HTTPS](#-https-ca-certificates) |
+| `-T ms` | HTTP timeout, default 10000, see [stall limits](#-http-input-hls-options-and-stall-limits) |
+| `-v` | live TS stream mode (not seekable, reconnect at the end) |
+| `-i` | play in an endless loop |
+| `-n 0\|1\|2` | RTMP implementation: auto, FFmpeg native, librtmp |
+| `-o flags` | progressive download |
+| `-S size`, `-O offset`, `-F file` | remote file size, moov atom offset and a file with the moov atom data, for MP4 in progressive download |
+| `-b MB` | size of the RAM buffer in front of the DVB devices |
+| `-G directory`, `-W width`, `-H height` | graphic subtitle pictures and the window they are scaled for (default 1280x720) |
+| `-4 0\|1` | FLV to MPEG-4 Part 2 converter off/on (builds with `HAVE_FLV2MPEG4_CONVERTER`, as the BitBake recipe) |
+| `-C` | no cache of the track lists |
+| `-p value` | nice value of the process |
+| `-L NAME:LEVEL` | debug level, may be repeated, e.g. `-L FFMPEG_DEBUG_LEVEL:10 -L FFMPEG_SILENT:0`; the names are in `tools/debug.c` |
+
+---
+
+## ⌨️ stdin commands
+
+One command per line. While the input opens, only `q` (exit code 11) and `dk`
+are read. A thread of its own reads stdin in whole lines of up to 16 kB
+(longer ones are dropped) and takes `dk` lines at once, also while a seek,
+track switch or list waits for the reading thread.
+
+| Command | Action | Answer |
+|---|---|---|
+| `q` | stop | `PLAYBACK_STOP` |
+| `p`, `c` | pause, continue | `PLAYBACK_PAUSE`, `PLAYBACK_CONTINUE` |
+| `f<speed>`, `b<speed>`, `m<speed>` | fast forward, fast backward, slow motion | `PLAYBACK_FASTFORWARD`, `PLAYBACK_FASTBACKWARD`, `PLAYBACK_SLOWMOTION` with `speed` and `sts` |
+| `gc<sec>`, `gf<sec>` | seek to a position, on the keyframe before it; `c` only for a length of at least 10 s and at most to 10 s before the end, `f` without these checks. `<sec>` may have a fraction (`gf754.321`, ms; a `.` whatever the locale) | `PLAYBACK_LENGTH`, `PLAYBACK_SEEK_ABS` (`sec`, `sts`; with a fraction also `ms`, `after`) |
+| `ga<sec>` | as `gf`, but on the first keyframe at or after the position (the one before when there is none behind it), see [Chapters](#-chapters) | `PLAYBACK_LENGTH`, `{"PLAYBACK_SEEK_ABS":{"sec":4, "ms":4321, "after":1, "sts":0}}` |
+| `kc<sec>`, `kf<sec>` | seek by seconds; `c` keeps the target between the start and 5 s before the end | `J`, `PLAYBACK_LENGTH`, `PLAYBACK_SEEK` |
+| `j` | position | `{"J":{"ms":...,"lms":...}}` (`lms`, the last PTS the demuxer read, when known); every eleventh `j` also `PLAYBACK_LENGTH` |
+| `l` | length | `{"PLAYBACK_LENGTH":{"length":...,"sts":0}}` |
+| `i` | state | `PLAYBACK_INFO` |
+| `n0`, `n1` | loop mode off/on | `{"N":{"isLoop":...}}` |
+| `o<flags>` | progressive download flags | `PROGRESSIVE_DOWNLOAD` |
+| `al`, `ac` | audio track list, current audio track | `a_l`, `a_c` |
+| `a<id>`, `ai<index>` | switch audio by ID or by list position | `{"a_s":{"id":...,"sts":...}}` |
+| `am`, `am<n>` | dual mono channel | `a_m` |
+| `sl`, `sc` | subtitle track list, current subtitle track | `s_l`, `s_c` |
+| `s<id>`, `si<index>`, `s-1` | switch subtitles, `-1` off | `{"s_s":{"id":...,"sts":...}}` |
+| `vl`, `vc` | video track list, current video track | `v_l`, `v_c` |
+| `cl` | chapters | `c_l` |
+| `dk <kid>:<key>`, `dk <kid>:-` | CENC key of a KID, or none; several pairs per line, also keys that were not asked for | `{"DRM_KEY":{"kid":...,"sts":...}}` for an asked KID |
+
+The end of a command pipe acts as `q`, see the notes on stdin above. A
+connection to the UNIX socket `/tmp/.exteplayerterm.socket` also stops the
+player, during the open as well.
+
+---
+
+## 📡 JSON messages
+
+All messages are single lines on stderr.
+
+| Message | When |
+|---|---|
+| `EPLAYER3_EXTENDED` | first line: version and features, see [below](#-start-message-eplayer3_extended-version-and-features) |
+| `cover` | `--cover`: after the open, before `PLAYBACK_OPEN`: `file`, `type`, `w`, `h`, `size`, or `{}` without a cover, see [Embedded cover](#-embedded-cover) |
+| `PLAYBACK_OPEN` | after the open: `OutputName`, `file`, `sts` (negative: failed, exit code 10) |
+| `OUTPUT_OPEN`, `PLAYBACK_PLAY` | start of the playback, then `v_c`, `a_l`, `a_c`, `s_l`, `s_c` (`a_s`, `s_s` with `-t`, `-9`), `c_l` |
+| `FF_ERROR` | `msg`, `code`: open or read error, see [HTTP input](#-http-input-hls-options-and-stall-limits); `"code":-13` with `No key for KID <kid> (video)` before the stop of a video without a key |
+| `a_l`, `a_c`, `s_l`, `s_c`, `v_l`, `v_c`, `v_e` | tracks, see [Adaptive playback and metadata](#-adaptive-playback-and-metadata) |
+| | audio `a_l`/`a_c`: `id`, `e`, `n`, `c`, `d`, `t`, `sr`, `br`, `cl`, `bps`; subtitles `s_l`/`s_c`: `id`, `e`, `n`, `f`, `t`; `v_c`: `id`, `e`, `n`, `w`, `h`, `f`, `p`, `an`, `ad`, `hdr`, `pr`, `bd`, `br`, `dv`, `cr`, `tc`; `v_l` entries: `id`, `e`, `n`, `pr`, `bd`, `br`, `dv`, `cr`, `tc` |
+| `c_l` | chapters: `{"c_l":[{"id","s","e","t"}]}` (ms), see [Chapters](#-chapters) |
+| `DRM_KEY_REQ` | `--key-request`: `kid`, `type`, `pssh` (`system`, `data`): a KID without a key, once per KID, see [CENC keys per KID](#-cenc-keys-per-kid) |
+| `DRM_KEY` | `kid`, `sts`: outcome of a request, `0` key, `-1` none (`dk <kid>:-`), `-2` no answer within `--key-timeout` |
+| `DRM_KEY_DROP` | `kid`, `type`, `id`, `switch`: a track without a key was dropped; `switch` is the audio track switched to, `-1` none |
+| `s_a` | subtitle cue: text `{"id","s","e","t"}` (ms), graphic `{"id","s","e","r":[{"x","y","w","h","f"}]}` with `"e":null` when the end is not known |
+| `s_f` | `{"s_f":{"r":0}}`: the subtitle output was reset (flush) |
+| `m_t` | radio text of audio-only playback |
+| `e_plugin` | `["png","init",<error>]`: no way to save graphic subtitles |
+| `PLAYBACK_TRICK_END` | DreamNextGen only: winding found no further keyframe |
+
+stdout carries diagnostics, including `{"log":"live sync: ..."}` lines.
+
+### 🚀 Start message EPLAYER3_EXTENDED (version and features)
+
+The first line on stderr, sent before the options are parsed, carries the
+player version and what this build supports. The name dates from the first
+commit (v24) and stays, because front ends (E2iPlayer, ServiceApp) detect the
+player by it; the OE-A player sends `{"EPLAYER3_EXTENDED":{"version":185}}`.
+
+`{"EPLAYER3_EXTENDED":{"version":187,"start":1,"xcode":7,"achannel":1,"forcedonly":1,"hlsseg":3,"drmkey":3,"mpdopt":1,"c_l":1,"seekms":1}}`
+
+A missing key means "not supported": front ends should read every key with a
+default of `0` (`.get(key, 0)`) and test the feature, not the version.
+
+| Key | Values | Meaning | Since version |
+|---|---|---|---|
+| `version` | `187` | player version | 24 |
+| `start` | `1` | `--start <seconds>` is known, see [Start position](#-start-position) | 187 |
+| `xcode` | bit mask `0`-`7` | audio encoders: `1` AC-3 (`-Z`, `-X`), `2` AAC (`-Y`), `4` E-AC-3 (`-E`); always present, `0` without any | 186 |
+| `trick` | `1` | DreamNextGen builds only: `f<speed>`/`b<speed>` wind on keyframes | 187 |
+| `achannel` | `1` | stdin `am<n>` (left/stereo/right of dual mono) is known | 187 |
+| `hlsseg` | bit mask `1`-`3` | HLS segments played directly: `1` any name (`.js`, `.png`, none; always set), `2` an image in front of the TS data | 187 |
+| `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`; only with an FFmpeg that has `decryption_key_url`), see [CENC keys per KID](#-cenc-keys-per-kid) | 187 |
+| `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | 187 |
+| `forcedonly` | `1` | `--forced-only` and stdin `so1`/`so0`/`so` (answer `s_o`): only forced subtitle cues are sent | with #81 |
+| `cover` | `1` | `--cover <path>`: the embedded cover is written to path, message `cover`, see [Embedded cover](#-embedded-cover) | after 187 |
+| `c_l` | `1` | chapters: `c_l` after the track lists, stdin `cl`, see [Chapters](#-chapters) | 187 |
+| `seekms` | `1` | `gc`/`gf` take a fraction of a second (`gf754.321`), `ga<seconds>` lands on the first keyframe at or after the position | 187 |
+
+The version number does not change with every feature: keys added after a release come in builds that still report the previous version (e.g. most keys above came in builds that reported 186 before the release of 187). A front end should therefore test the key, not the version.
+
+---
+
+## 🔌 Environment variables
+
+| Variable | Meaning |
+|---|---|
+| `EP3_LIVE_SYNC`, `EP3_LIVE_SYNC_MARGIN`, `EP3_LIVE_SYNC_WATCH` | live-output hold and watch, see [Adaptive playback and metadata](#-adaptive-playback-and-metadata) |
+| `EP3_H264_LEVEL41` | H.264 SPS level limit |
+| `EP3_H264_CONSTRAINED_HIGH` | H.264 "Constrained High" flags of High profile SPS cleared (default on) |
+| `EP3_DTS_HD_MODE`, `EP3_DTS_PAD` | DTS-HD bypass mode, DTS core-frame padding |
+| `EP3_AC3_48K` | `0`: no AC-3 encoding of AC-3/E-AC-3 that is not at 48 kHz on a Dreambox, see [Optional audio transcoding](#-optional-audio-transcoding) |
+| `EP3_EAC3_RESTART` | DD+ passthrough restart, see [DD+ passthrough restart](#-dd-passthrough-restart-on-vu-ultimo-4k-and-duo-4k-se) |
+| `EP3_OUTPUT_PACING_MS` | software playback clock, see [HiSilicon receivers](#-hisilicon-receivers) |
+| `EP3_HISI_AV_SYNC` | HiSilicon only, `1`: hardware A/V sync also for streams that are not DASH, see [HiSilicon receivers](#-hisilicon-receivers) |
+| `EP3_HISI_NO_CLEAR` | HiSilicon only, `1`: no decoder buffer clears at the open and the video start |
+| `EP3_LPCM_FRAMES` | `2`..`12`: LPCM frames per PES packet with `-l` (default one), see [HiSilicon receivers](#-hisilicon-receivers) |
+| `SSL_CERT_FILE`, `SSL_CERT_DIR`, `EP3_CA_FILES`, `EP3_CA_DEFAULT_FILE` | CA certificates, see [HTTPS](#-https-ca-certificates) |
+| `EP3_FAKE_AUDIO_CLOCK=<ms>` | host build (`tests/build.sh`) only: without video, the fake output reports the position of an audio decoder that plays in real time and stands for `<ms>` after a clear |
+| `EP3_FAKE_VIDEO_LEAD=<ms>` | host build only: the fake video decoder holds up to `<ms>` of video ahead of what it shows, as receiver decoders do |
+
+---
+
+## 🛠️ Build-time settings
+
+| Define | Meaning |
+|---|---|
+| `HAVE_FLV2MPEG4_CONVERTER` | FLV converter (`-4`), set by the BitBake recipe |
+| `HAVE_DREAMNEXTGEN` | Dreambox One/Two backend, see [DreamNextGen](#dreamnextgen-build-dreambox-onetwo) |
+| `H264_LEVEL41_DEFAULT=0\|1` | default of `EP3_H264_LEVEL41` (`1` on MIPS) |
+| `H264_CONSTRAINED_HIGH_DEFAULT=0\|1` | default of `EP3_H264_CONSTRAINED_HIGH` (`1`) |
+| `PCM_EXPORT_PATH` | FIFO of `-K`, default `/tmp/exteplayer3_pcm_audio.fifo` |
+| `EXTEPLAYER_VIDEO_SOCKET` | `v_c` datagram socket, default `/var/run/video.socket`, `""` off |
+| `EXTEPLAYER_TERM_SOCKET` | stop socket, default `/tmp/.exteplayerterm.socket`, `""` off |
+
+The prebuilt packages in `ipk/` are of version 187 (see `ipk/README.md`).
+
+---
+
+## 🚪 Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | end of the playback, `q`, the end of the command pipe, `SIGINT`/`SIGTERM`/`SIGHUP`, a video track without a CENC key |
+| `1` | usage text: missing uri, unknown option, invalid value, an `iptv://` file of the uri or of `-F` that cannot be read |
+| `10` | the open failed (`PLAYBACK_OPEN` with a negative `sts`) |
+| `11` | `q` during the open |
+| `128 + signal` | a second signal, or a stop after a signal that takes more than 5 s (after the DVB cleanup of at most 1 s) |
+
+---
+
+## 📜 License
+
+[![License: GPL v2 or later](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
+
+exteplayer3 is free software; you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation; either version 2 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE) for the full text. Files without a notice of
+their own are under this license as well (the recipe declares
+`GPL-2.0-or-later`).
+
+| Part | License | Origin |
+|---|---|---|
+| `main/`, `container/`, `manager/`, `playback/`, `output/`, `tools/`, `include/`, `external/plugins/` | GPL-2.0-or-later | exteplayer3 (samsamsam), based on libeplayer3 |
+| `tools/hevc_hdr.c` | GPL-2.0-or-later | C port of BlackHole/enigma2 `lib/service/hevc_hdr.cpp` (OpenBH contributors) |
+| `external/ffmpeg/src/` | LGPL-2.1-or-later | FFmpeg (bitstream reader, LATM, MPEG-4 audio, Xiph helpers) |
+| `external/flv2mpeg4/` | LGPL-2.1-or-later | flv2mpeg4, vixy project |
+| `include/stm_ioctls.h` | © STMicroelectronics 2005, all rights reserved (no license notice) | LinuxDVB API extensions of the STMicroelectronics SH4 driver |
+
+FFmpeg itself is not part of this repository; the player links the FFmpeg
+of the image or of the package (see [FFmpeg companions](#-ffmpeg-companions)),
+which keeps its own license.
+
+---
+
+## 🙏 Credits
+
+**👨‍💻 Original author:** exteplayer3 was created by
+<a href="https://gitlab.com/e2i/e2iplayer">**samsamsam**</a> as the player of
+E2iPlayer (first public sources: version 24, April 2016, the first commits
+of this history), built on libeplayer3 of the Enigma2 SH4 projects and on
+FFmpeg. Thanks to samsamsam for the original program! His later versions are
+closed source.
+
+**Maintainer:** skyjet18. The trees of
+[OE-Alliance](https://github.com/oe-alliance/exteplayer3),
+[OpenViX](https://github.com/OpenViX/exteplayer3) and
+[OpenBH](https://github.com/BlackHole/exteplayer3) continue samsamsam's
+player as well; this one has gone its own way since 2019.
+
+Several features and fixes merged since 185 were ported from other
+exteplayer3 trees and Enigma2 projects. Thanks to their authors:
+
+**OpenBH / Ev0-BH** ([BlackHole/exteplayer3](https://github.com/BlackHole/exteplayer3),
+also in OpenViX/exteplayer3)
+
+- Audio codec description and live channel count in the track messages
+  (#19): [528ef20](https://github.com/BlackHole/exteplayer3/commit/528ef20),
+  [e9a449a](https://github.com/BlackHole/exteplayer3/commit/e9a449a),
+  [cd9a8b7](https://github.com/BlackHole/exteplayer3/commit/cd9a8b7).
+- HDR10/HLG detection of HEVC streams (#20):
+  [5112b90](https://github.com/BlackHole/exteplayer3/commit/5112b90).
+- DTS core-frame padding (#21) and DTS-HD bypass mode (#22): the DTS driver
+  fixes for the GStreamer DVB audio sink,
+  [0004-dvbaudiosink-dts-driver-fixes.patch](https://github.com/oe-alliance/oe-alliance-core/blob/6.0/meta-oe/recipes-multimedia/gstreamer/gstreamer1.0-plugin-dvbmediasink/0004-dvbaudiosink-dts-driver-fixes.patch)
+  in oe-alliance-core ([4f339a5](https://github.com/oe-alliance/oe-alliance-core/commit/4f339a5268));
+  the padding is also in [b6213a8](https://github.com/BlackHole/exteplayer3/commit/b6213a8).
+- Audio transcoding DTS/TrueHD to AC-3 or E-AC-3 and HE-AAC to AAC-LC (#23):
+  [86199f9](https://github.com/BlackHole/exteplayer3/commit/86199f9),
+  [853bc07](https://github.com/BlackHole/exteplayer3/commit/853bc07),
+  [a8529b0](https://github.com/BlackHole/exteplayer3/commit/a8529b0).
+- DD+ passthrough restart on VU+ Ultimo 4K / Duo 4K SE (#24):
+  [4ad6f5a](https://github.com/BlackHole/exteplayer3/commit/4ad6f5a).
+- The idea of the Dolby Atmos (JOC) detection in the track messages (#19):
+  [7e399e8](https://github.com/BlackHole/exteplayer3/commit/7e399e8)
+  (OpenViX c319e03).
+- DD+ passthrough kept running on a DD+ -> DD+ audio switch (#41), own
+  implementation: [02397bd](https://github.com/BlackHole/exteplayer3/commit/02397bd)
+  (OpenViX 7f0c56b).
+- DTS-HD mode on the Ultimo 4K and Duo 4K SE, the model list (#73):
+  [b6213a8](https://github.com/BlackHole/exteplayer3/commit/b6213a8)
+  (OpenViX 10e6e62).
+- The E-AC-3 encoder in the FFmpeg of the ipk packages (#60), as in
+  oe-alliance-core [d87d3cc](https://github.com/oe-alliance/oe-alliance-core/commit/d87d3cc)
+  and [e44beaa](https://github.com/oe-alliance/oe-alliance-core/commit/e44beaa).
+
+**OE-Alliance** ([oe-alliance/exteplayer3](https://github.com/oe-alliance/exteplayer3))
+
+- The DreamNextGen backend for the Dreambox One/Two (#37): 21 commits from
+  [8b605e1](https://github.com/oe-alliance/exteplayer3/commit/8b605e1) to
+  [71dc342](https://github.com/oe-alliance/exteplayer3/commit/71dc342), in the
+  state of [2f850bd](https://github.com/oe-alliance/exteplayer3/commit/2f850bd).
+- The video track for enigma2 on `/var/run/video.socket` (#36):
+  [36d6726](https://github.com/oe-alliance/exteplayer3/commit/36d6726).
+- AC-4 always to the software decoder and a louder mixdown of 10+ channel
+  sources, WXbet: [ca78343](https://github.com/oe-alliance/exteplayer3/commit/ca78343).
+  Here the level rule follows the input channels and AC-4 7.1.4 goes out as
+  7.1; the probe for a decoder that fills only the first channel is not
+  needed with the AC-4 decoder of FFmpeg 9.
+
+**OpenVu** ([OpenVu/exteplayer3](https://github.com/OpenVu/exteplayer3))
+
+- HiSilicon detection by vendor SDK paths and chipset name, write-first with
+  `-b`, optional software playback clock (#26):
+  [c7ed2b7](https://github.com/OpenVu/exteplayer3/commit/c7ed2b7),
+  [b7970df](https://github.com/OpenVu/exteplayer3/commit/b7970df).
+- No rescale of a missing timestamp of software decoded audio (#6):
+  [377d2a9](https://github.com/OpenVu/exteplayer3/commit/377d2a9).
+- PCM blocks timed from the packets again when they drift more than 40 ms
+  from the counted timestamp:
+  [2cfe618](https://github.com/OpenVu/exteplayer3/commit/2cfe618).
+- HiSilicon, opt-in: hardware A/V sync also for streams that are not DASH
+  (`EP3_HISI_AV_SYNC`):
+  [e82045e](https://github.com/OpenVu/exteplayer3/commit/e82045e).
+- HiSilicon, opt-in: no decoder buffer clears at the start
+  (`EP3_HISI_NO_CLEAR`):
+  [e2919c1](https://github.com/OpenVu/exteplayer3/commit/e2919c1), as also in
+  [leandrotsampa/exteplayer3 08284a5](https://github.com/leandrotsampa/exteplayer3/commit/08284a5)
+  (Atto Pixel).
+- Opt-in: up to 12 LPCM frames per PES packet (`EP3_LPCM_FRAMES`):
+  [4688e0e](https://github.com/OpenVu/exteplayer3/commit/4688e0e).
+- The output pacing of video by the DTS instead of the PTS:
+  [3a8f39c](https://github.com/OpenVu/exteplayer3/commit/3a8f39c).
+
+**boingbasti** ([boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
+`exteplayer3-build/src`)
+
+- `Accept-Encoding: gzip` for HLS playlists (#18):
+  [eb75eb1](https://github.com/boingbasti/e2-serviceapp-vti/commit/eb75eb1).
+- The case of audio and video that count from timestamp origins hours apart,
+  found and analysed there (#13 solves it differently):
+  [8c3cb3c](https://github.com/boingbasti/e2-serviceapp-vti/commit/8c3cb3c).
+- A stream whose codec is not known yet (private MPEG-TS stream_type) is not
+  discarded before FFmpeg could probe it:
+  [eb75eb1](https://github.com/boingbasti/e2-serviceapp-vti/commit/eb75eb1).
+
+**Blacker91** ([Blacker91/exteplayer3-dreamos](https://github.com/Blacker91/exteplayer3-dreamos),
+the DreamOS build; taken over here directly)
+
+- Live streams: hold the output at the start until audio is buffered,
+  keep watching the audio buffer after it, shorter hold:
+  [c374e6c](https://github.com/skyjet18/exteplayer3/commit/c374e6cf),
+  [195117c](https://github.com/skyjet18/exteplayer3/commit/195117cf),
+  [1c0154f](https://github.com/skyjet18/exteplayer3/commit/1c0154fb).
+- Dreambox: VP9 in 32 kB PES chunks:
+  [6afa655](https://github.com/skyjet18/exteplayer3/commit/6afa6558).
+- MP2 audio as `AUDIOTYPE_MPEG` like enigma2 live TV:
+  [dfae547](https://github.com/skyjet18/exteplayer3/commit/dfae5478).
+- H.264: no avcC SPS/PPS in front of a stream that carries its own:
+  [f1d9327](https://github.com/skyjet18/exteplayer3/commit/f1d9327b).
+- H.264/H.265: up to 1024 iovecs per frame:
+  [b05c2c7](https://github.com/skyjet18/exteplayer3/commit/b05c2c7a).
+- musl: `fileno()` instead of the glibc FILE internal `_fileno`:
+  [b5e3e72](https://github.com/skyjet18/exteplayer3/commit/b5e3e729).
+- The first video keyframe a little before the start time of the container
+  (Matroska over HTTP: the start time came from an audio block, the keyframe
+  was dropped) is played instead of dropped (#83):
+  [bb73bc8](https://github.com/Blacker91/exteplayer3-dreamos/commit/bb73bc8).
+- AC-3 and E-AC-3 that are not at 48 kHz encoded to AC-3 at 48 kHz on a
+  Dreambox (`EP3_AC3_48K`):
+  [e1eef5a](https://github.com/Blacker91/exteplayer3-dreamos/commit/e1eef5a).
+
+**OpenVisionE2 / WXbet** ([OpenVisionE2/exteplayer3](https://github.com/OpenVisionE2/exteplayer3))
+
+- `/usr/bin/hihalt` as one more marker of a HiSilicon receiver:
+  [1985757](https://github.com/OpenVisionE2/exteplayer3/commit/19857571).
+
+**neutrino-images / ni-libstb-hal** ([neutrino-images/ni-libstb-hal](https://github.com/neutrino-images/ni-libstb-hal),
+`libeplayer3`)
+
+- The best DASH audio representation of the first track's language instead
+  of the first one, TangoCash (here a track for the decoder of the box first,
+  then channels and bandwidth):
+  [ce94a37](https://github.com/neutrino-images/ni-libstb-hal/commit/ce94a37).
+- CENC KIDs and keys also as UUID and base64/base64url (ClearKey JSON), see
+  [CENC keys per KID](#-cenc-keys-per-kid), TangoCash:
+  [0c739c6](https://github.com/neutrino-images/ni-libstb-hal/commit/0c739c6).
+- The rtmp parameter buffers one byte short of the terminating NUL (GetAway):
+  [910f926](https://github.com/neutrino-images/ni-libstb-hal/commit/910f926db76cef5158048537f65c1d5cec84a53e).
+- The PCM header of the audio writers zero-initialised, without stack
+  contents in its codec data pointer and size (GetAway, Thilo Graf):
+  [101d3d4](https://github.com/neutrino-images/ni-libstb-hal/commit/101d3d473b75c93b570e9ee00418e88d64384f30),
+  [ce0b9bb](https://github.com/neutrino-images/ni-libstb-hal/commit/ce0b9bb695c69968fd94544de4fd7d04a27cafc8).

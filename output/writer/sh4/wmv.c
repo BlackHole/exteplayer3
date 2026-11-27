@@ -48,7 +48,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 #define WMV3_PRIVATE_DATA_LENGTH        4
@@ -84,7 +84,7 @@ static const unsigned char  Metadata[]          =
 };
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static int initialHeader = 1;
 
@@ -115,7 +115,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    if ((call->data == NULL) || (call->len <= 0)) {
+    if ((call->data == NULL) || (call->len == 0)) {
         wmv_err("parsing NULL Data. ignoring...\n");
         return 0;
     }
@@ -125,8 +125,8 @@ static int writeData(void* _call)
         return 0;
     }
 
-    wmv_printf(10, "VideoPts %lld\n", call->Pts);
-    wmv_printf(10, "Got Private Size %d\n", call->private_size);
+    wmv_printf(10, "VideoPts %llu\n", call->Pts);
+    wmv_printf(10, "Got Private Size %u\n", call->private_size);
 
     memcpy(private_data.privateData, call->private_data,
            call->private_size>WMV3_PRIVATE_DATA_LENGTH?WMV3_PRIVATE_DATA_LENGTH:call->private_size);
@@ -143,8 +143,8 @@ static int writeData(void* _call)
         unsigned int                crazyFramerate = 0;
 
         wmv_printf(10, "Framerate: %u\n", private_data.framerate);
-        wmv_printf(10, "biWidth: %d\n",   private_data.width);
-        wmv_printf(10, "biHeight: %d\n",  private_data.height);
+        wmv_printf(10, "biWidth: %u\n",   private_data.width);
+        wmv_printf(10, "biHeight: %u\n",  private_data.height);
 
         crazyFramerate = ((10000000.0 / private_data.framerate) * 1000.0);
         wmv_printf(10, "crazyFramerate: %u\n", crazyFramerate);
@@ -193,7 +193,7 @@ static int writeData(void* _call)
 
             int Remaining = call->len - Position - PacketLength;
 
-            wmv_printf(20, "PacketLength=%d, Remaining=%d, Position=%d\n", PacketLength, Remaining, Position);
+            wmv_printf(20, "PacketLength=%d, Remaining=%d, Position=%u\n", PacketLength, Remaining, Position);
 
             unsigned char       PesHeader[PES_MAX_HEADER_SIZE];
             memset (PesHeader, '0', PES_MAX_HEADER_SIZE);
@@ -207,7 +207,7 @@ static int writeData(void* _call)
                 PrivateHeaderLength     = InsertVideoPrivateDataHeader (&PesHeader[HeaderLength],
                                           call->len);
                 /* Update PesLength */
-                PesLength               = PesHeader[PES_LENGTH_BYTE_0] +
+                PesLength               = PesHeader[PES_LENGTH_BYTE_0] + 
                                             (PesHeader[PES_LENGTH_BYTE_1] << 8) + PrivateHeaderLength;
                 PesHeader[PES_LENGTH_BYTE_0]            = PesLength & 0xff;
                 PesHeader[PES_LENGTH_BYTE_1]            = (PesLength >> 8) & 0xff;
@@ -219,6 +219,11 @@ static int writeData(void* _call)
             }
 
             PacketStart = malloc(call->len + HeaderLength);
+            if (!PacketStart)
+            {
+                wmv_err("allocating the packet failed\n");
+                break;
+            }
             memcpy (PacketStart, PesHeader, HeaderLength);
             memcpy (PacketStart + HeaderLength, call->data + Position, PacketLength);
 

@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "strbuffer.h"
-
+ 
 typedef enum {
     MANAGER_ADD,
     MANAGER_LIST,
@@ -27,6 +27,24 @@ typedef enum {
     eTypePES
 } eTrackTypeEplayer;
 
+/* Audio stream values for front ends: 0 or "" when unknown. */
+typedef struct AudioStreamInfo_s {
+    int                   sample_rate;      /* Hz */
+    int                   bit_rate;         /* bit/s */
+    int                   bits_per_sample;  /* lossless codecs only */
+    char                  channel_layout[40];
+} AudioStreamInfo_t;
+
+/* Video stream values for front ends: 0, "" or NULL when unknown. */
+typedef struct VideoStreamInfo_s {
+    char                  profile_level[48];
+    int                   bit_depth;
+    int                   bit_rate;         /* bit/s */
+    int                   dv_profile;       /* Dolby Vision, 0 = none */
+    const char           *color_primaries;  /* a constant string or NULL */
+    const char           *color_transfer;   /* transfer characteristic, a constant string or NULL */
+} VideoStreamInfo_t;
+
 typedef struct Track_s {
     char *                Name;
     char *                Encoding;
@@ -45,7 +63,7 @@ typedef struct Track_s {
     int32_t               version;
     long long int         pts;
     long long int         dts;
-
+    
     /* for later use: */
     eTrackTypeEplayer     type;
     int                   width;
@@ -64,40 +82,56 @@ typedef struct Track_s {
     uint8_t*              aacbuf;
     unsigned int          aacbuflen;
     int                   have_aacheader;
+    /* audio: name of the codec for display, a constant string or NULL */
+    const char           *Description;
+    /* audio: channel count from the codec parameters, 0 if unknown */
+    int                   channels;
+    /* audio: rate, bit rate, sample size, channel layout of the stream */
+    AudioStreamInfo_t     audio_info;
+    /* video: profile and level, bit depth, bit rate, Dolby Vision, colour */
+    VideoStreamInfo_t     video_info;
+    /* audio, subtitle: title of the track, owned like Name, NULL if none */
+    char                 *Title;
 
     /* If player2 or the elf do not support decoding of audio codec set this.
      * AVCodec is than used for softdecoding and stream will be injected as PCM */
     int                   inject_as_pcm;
     int                   inject_raw_pcm;
+    /* Not 0: the track is decoded and encoded again before it is written,
+     * to AC3 (1), to AAC-LC (2) or to E-AC-3 (4). The output is set up for that codec,
+     * Encoding keeps the codec of the stream. */
+    int                   transcode;
 
     int                   pending;
-
-    char                 *Description;
-    char                 *OutputEncoding;
-    int                   channels;
-    int                   channels_live;   /* channels taken from the stream itself, not the probe */
-    int                   transcode_to_ac3;
-    int                   transcode_to_aaclc;
     int                   is_forced;
 } Track_t;
 
-typedef struct TrackDescription_s
+typedef struct TrackDescription_s 
 {
     int                   Id;
     char *                Name;
     char *                Encoding;
+    /* audio only: a constant string (not to be freed) or NULL */
+    const char *          Description;
+    /* audio only: 0 if unknown */
+    int                   channels;
+    /* audio only */
+    AudioStreamInfo_t     audio_info;
+    /* video only */
+    VideoStreamInfo_t     video_info;
     unsigned int          frame_rate;
     int                   width;
     int                   height;
     int32_t               aspect_ratio_num;
     int32_t               aspect_ratio_den;
     int                   progressive;
-    int                   channels;
     int                   is_forced;
-
+    /* audio, subtitle: to be freed like Name, NULL if the track has none */
+    char *                Title;
+    
 } TrackDescription_t;
 
-typedef struct Manager_s
+typedef struct Manager_s 
 {
     char * Name;
     int (* Command) (/*Context_t*/void  *, ManagerCmd_t, void *);
@@ -106,7 +140,7 @@ typedef struct Manager_s
 
 } Manager_t;
 
-typedef struct ManagerHandler_s
+typedef struct ManagerHandler_s 
 {
     char *Name;
     Manager_t *audio;

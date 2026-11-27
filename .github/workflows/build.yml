@@ -34,7 +34,6 @@ jobs:
           libbluray-dev \
           librtmp-dev \
           libudfread-dev \
-          libasound2-dev \
           zlib1g-dev \
           libbz2-dev \
           liblzma-dev \

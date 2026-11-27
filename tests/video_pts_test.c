@@ -1,0 +1,304 @@
+#include <assert.h>
+#include <errno.h>
+#include <poll.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <linux/types.h>
+#ifndef VIDEO_GET_PTS
+#define VIDEO_GET_PTS _IOR('o', 57, __u64)
+#endif
+#ifndef AUDIO_GET_PTS
+#define AUDIO_GET_PTS _IOR('o', 19, __u64)
+#endif
+/* the stale decoder value after a start is replaced this long, see PosBoundApply() */
+#define POS_BOUND_START_MS 300
+#define ioctl test_ioctl
+#define poll test_poll
+#define fopen test_fopen
+int test_ioctl(int fd, unsigned long request, ...);
+int test_poll(struct pollfd *fds, nfds_t count, int timeout);
+FILE *test_fopen(const char *path, const char *mode);
+#include "../output/linuxdvb_mipsel.c"
+#undef ioctl
+#undef poll
+#undef fopen
+
+/* The position of the DVB output (OUTPUT_PTS) with a driver whose
+ * VIDEO_GET_PTS answers 0: before any video with a PTS was written that is
+ * the position, afterwards the PTS of the audio decoder is taken when it has
+ * one. The driver is described by the answers of the two ioctls. */
+
+enum { VIDEO_FD = 3, AUDIO_FD = 4 };
+
+static unsigned long long video_pts, audio_pts;
+static int video_fails, audio_fails, audio_requests;
+
+int test_ioctl(int fd, unsigned long request, ...)
+{
+    va_list args;
+    void *argument;
+    va_start(args, request);
+    argument = va_arg(args, void *);
+    va_end(args);
+    if (request == VIDEO_GET_PTS)
+    {
+        assert(fd == VIDEO_FD);
+        errno = EINVAL;
+        if (video_fails)
+            return -1;
+        *(unsigned long long *)argument = video_pts;
+        return 0;
+    }
+    if (request == AUDIO_GET_PTS)
+    {
+        assert(fd == AUDIO_FD);
+        audio_requests++;
+        errno = EINVAL;
+        if (audio_fails)
+            return -1;
+        *(unsigned long long *)argument = audio_pts;
+        return 0;
+    }
+    /* clear, play and the rest: accepted */
+    return 0;
+}
+
+int test_poll(struct pollfd *fds, nfds_t count, int timeout)
+{
+    (void)timeout;
+    assert(count == 1);
+    fds[0].revents = 0;
+    return 0;
+}
+
+FILE *test_fopen(const char *path, const char *mode)
+{
+    (void)path;
+    (void)mode;
+    errno = ENOENT;
+    return NULL;
+}
+
+stb_type_t GetSTBType(void) { return STB_VUPLUS; }
+int8_t PlaybackDieNow(int8_t value) { (void)value; return 0; }
+void E2iSendMsg(const char *format, ...) { (void)format; }
+
+static int write_packet(void *call) { (void)call; return 100; }
+static int reset_writer(void) { return 0; }
+static WriterCaps_t video_caps = {.dvbStreamType = STREAMTYPE_MPEG4_H264};
+static Writer_t video_writer = {.reset = reset_writer, .writeData = write_packet, .caps = &video_caps};
+Writer_t *getWriter(char *name) { (void)name; return &video_writer; }
+Writer_t *getDefaultVideoWriter(void) { return NULL; }
+Writer_t *getDefaultAudioWriter(void) { return NULL; }
+ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic) { (void)fd; (void)iov; return ic; }
+ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic) { (void)fd; (void)iov; return ic; }
+int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
+{
+    (void)context;
+    (void)type;
+    (void)outfd;
+    (void)mtx;
+    return 0;
+}
+int32_t LinuxDvbBuffClose(Context_t *context) { (void)context; return 0; }
+int32_t LinuxDvbBuffFlush(Context_t *context) { (void)context; return 0; }
+int32_t LinuxDvbBuffFlushAudio(Context_t *context) { (void)context; return 0; }
+int32_t LinuxDvbBuffResume(Context_t *context) { (void)context; return 0; }
+void WriterWakeUp(void) {}
+int32_t LinuxDvbBuffSetSize(const uint32_t size) { (void)size; return 0; }
+uint32_t LinuxDvbBuffGetSize(void) { return 0; }
+
+static int manager_command(void *ctx, ManagerCmd_t command, void *argument)
+{
+    (void)ctx;
+    if (command == MANAGER_GETENCODING)
+        *(char **)argument = strdup("V_MPEG4/ISO/AVC");
+    return 0;
+}
+
+static PlaybackHandler_t playback = {.isPlaying = 1};
+static Manager_t video = {.Command = manager_command};
+static Manager_t audio = {.Command = manager_command};
+static ManagerHandler_t managers = {.video = &video, .audio = &audio};
+static Context_t context = {.playback = &playback, .manager = &managers};
+
+static void write_video(unsigned long long pts)
+{
+    uint8_t data[8] = {0, 0, 0, 1, 0x65};
+    AudioVideoOut_t out = {.data = data, .len = sizeof(data), .pts = pts, .type = "video",
+                           .width = 1280, .height = 720};
+    assert(!LinuxDvbOutput.Write(&context, &out));
+}
+
+static unsigned long long position(int expected_ret)
+{
+    unsigned long long pts = 12345;
+    assert(Command(&context, OUTPUT_PTS, &pts) == expected_ret);
+    return pts;
+}
+
+int main(void)
+{
+    unsigned long long pts;
+    assert(!pthread_mutex_init(&LinuxDVBmutex, NULL));
+    videofd = VIDEO_FD;
+    audiofd = AUDIO_FD;
+
+    /* nothing written yet: 0 is the position of the video decoder, as before */
+    video_pts = 0;
+    audio_pts = 4500;
+    audio_requests = 0;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0 && audio_requests == 0);
+
+    /* a stream that starts at 0: its first picture does not change that */
+    write_video(0);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0 && audio_requests == 0);
+    write_video(INVALID_PTS_VALUE);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0 && audio_requests == 0);
+
+    /* video with a PTS written, the decoder still says 0: the audio PTS */
+    write_video(90000);
+    audio_pts = 90300;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 90300 && audio_requests == 1);
+
+    /* without an audio PTS (none yet, failing, no audio decoder) 0 stays */
+    audio_pts = 0;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    audio_fails = 1;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    audio_fails = 0;
+    audiofd = -1;
+    audio_requests = 0;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0 && audio_requests == 0);
+    audiofd = AUDIO_FD;
+
+    /* a running video decoder is asked alone (within the written video,
+     * further ahead the position is kept within the data) */
+    write_video(180000);
+    video_pts = 180000;
+    audio_pts = 170000;
+    audio_requests = 0;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 180000 && audio_requests == 0);
+
+    /* a clear starts over: 0 is a position again until video is written */
+    assert(!Command(&context, OUTPUT_CLEAR, "video"));
+    video_pts = 0;
+    audio_pts = 777;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0 && audio_requests == 0);
+    write_video(270000);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 777 && audio_requests == 1);
+    assert(!Command(&context, OUTPUT_FLUSH, "video"));
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    write_video(270000);
+    assert(!Command(&context, OUTPUT_STOP, "video"));
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+
+    /* a failing VIDEO_GET_PTS still falls back to the audio decoder */
+    video_fails = 1;
+    audio_pts = 360000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 360000);
+    audio_fails = 1;
+    assert(position(cERR_LINUXDVB_ERROR) == 0);
+
+    /* video from PTS 0 on, the decoder clock just before it, gone past 0
+     * (the position was 95443711 ms): the first PTS written is the
+     * position until the decoder shows the data */
+    video_fails = audio_fails = 0;
+    assert(!Command(&context, OUTPUT_PLAY, "video"));
+    write_video(0);
+    write_video(3600);
+    video_pts = (1ULL << 33) - 600;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    video_pts = 1800;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 1800);
+    /* a clock further before the data (an earlier playback): the first PTS
+     * written, for POS_BOUND_START_MS after it, then as it is */
+    assert(!Command(&context, OUTPUT_PLAY, "video"));
+    write_video(900000);
+    video_pts = 90000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 900000);
+    usleep((POS_BOUND_START_MS + 100) * 1000);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 90000);
+
+    /* The previous playback (another process) ended at 13.3 s; right after
+     * the start of a file at 0 VIDEO_GET_PTS still answers that. Nothing
+     * written yet: 0. */
+    assert(!Command(&context, OUTPUT_PLAY, "video"));
+    video_pts = 1197000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    /* 20 s written at once (-b), the decoder shows nothing of it yet: the
+     * stale value lies within the data, but further after the first PTS
+     * than the time since its write allows */
+    for (pts = 0; pts <= 1800000; pts += 3600)
+        write_video(pts);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    /* asked again, the stale value has not moved: still replaced */
+    usleep(50000);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    /* the decoder shows the data */
+    video_pts = 9000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 9000);
+    video_pts = 18000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 18000);
+    /* an earlier playback 90 minutes in, past the stall limit */
+    assert(!Command(&context, OUTPUT_PLAY, "video"));
+    video_pts = 5400ULL * 90000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    for (pts = 0; pts <= 108000; pts += 3600)
+        write_video(pts);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    /* a decoder in the data as far as the time since the first write allows */
+    usleep(200000);
+    video_pts = 99000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 99000);
+
+    /* A TS joined mid-GOP: its first keyframe comes 3 s after its first PTS
+     * (8.4 s). The 32 s of it are written at once, the decoder shows the
+     * keyframe at once and plays on from there, 3 s further in than the time
+     * since the first write. The end of the file (buff_ffmpeg.c) ends the
+     * playback after 10 requests 100 ms apart without a new position: here
+     * requests 20 ms apart within the POS_BOUND_START_MS of this test. The
+     * stale value of the earlier playback (13.3 s) is replaced first, then
+     * the position has to move with the decoder. */
+    {
+        const unsigned long long first = 756000, keyframe = first + 270000;
+        unsigned long long last, p;
+        struct timespec shown, now;
+        int i, unchanged = 0;
+
+        assert(!Command(&context, OUTPUT_PLAY, "video"));
+        video_pts = 1197000;
+        for (pts = first; pts <= first + 32 * 90000; pts += 3600)
+            write_video(pts);
+        last = position(cERR_LINUXDVB_NO_ERROR);
+        assert(last == first);
+        clock_gettime(CLOCK_MONOTONIC, &shown);
+        for (i = 0; i < 40; i++)
+        {
+            usleep(20000);
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            video_pts = keyframe + (unsigned long long)((now.tv_sec - shown.tv_sec) * 1000 +
+                                                        (now.tv_nsec - shown.tv_nsec) / 1000000) * 90;
+            p = position(cERR_LINUXDVB_NO_ERROR);
+            assert(p >= first && p <= first + 32 * 90000);
+            if (p == last)
+            {
+                unchanged++;
+                assert(unchanged < 10 && "no progress: the end of the file would end the playback");
+            }
+            else
+            {
+                assert(p > last);
+                unchanged = 0;
+            }
+            last = p;
+        }
+        assert(last >= keyframe);
+    }
+
+    printf("video PTS tests passed\n");
+    return 0;
+}

@@ -49,21 +49,29 @@ typedef enum OutputType_e{
     OUTPUT_VIDEO,
 } OutputType_t;
 
+/* A node holds the iovec segments of one WriteV() call: their lengths
+ * (segCount of them) behind the node, then their data. The buffering thread
+ * writes them one by one, as writev() does on the decoder devices: several
+ * drivers parse every write() of a PES header on its own. */
 typedef struct BufferingNode_s {
     uint32_t dataSize;
+    uint32_t segCount;
     OutputType_t dataType;
     void *stamp;
     struct BufferingNode_s *next;
 } BufferingNode_t;
 
+#define NODE_SEGMENTS(node) ((uint32_t *)((uint8_t *)(node) + sizeof(BufferingNode_t)))
+#define NODE_DATA(node) ((uint8_t *)(node) + sizeof(BufferingNode_t) + (node)->segCount * sizeof(uint32_t))
+
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define cERR_LINUX_DVB_BUFFERING_NO_ERROR      0
 #define cERR_LINUX_DVB_BUFFERING_ERROR        -1
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static pthread_t bufferingThread;
 static pthread_mutex_t bufferingMtx;
@@ -82,17 +90,31 @@ static int videofd = -1;
 static int audiofd = -1;
 static int g_pfd[2] = {-1, -1};
 
-static pthread_mutex_t *g_pDVBMtx = NULL;
-
+/* set while the thread is in a write() to a device, not while it waits for
+ * room in it: the flushes wait for the end of that write only */
 static bool g_bDuringWrite = false;
 static bool g_bWritingAudio = false;
 static bool g_bSignalWriteFinish = false;
+/* LinuxDvbBuffClose() asks the thread to end, guarded by bufferingMtx */
+static bool g_bClosing = false;
+/* counted up by each flush (all data / the audio), guarded by bufferingMtx:
+ * a chunk taken from the queue before a flush is not written after it */
+static uint32_t g_flushSerial = 0;
+static uint32_t g_audioFlushSerial = 0;
 
 static void *g_pWriteStamp = NULL;
+
+/* the chunk the thread writes, with the flushes it was taken after */
+typedef struct WriteTicket_s {
+    uint32_t flushSerial;
+    uint32_t audioFlushSerial;
+    bool audio;
+} WriteTicket_t;
 
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
+static void DropQueuedAudio(void);
 
 /* ***************************** */
 /* MISC Functions                */
@@ -105,10 +127,45 @@ static void WriteWakeUp()
     }
 }
 
+/* The write guard of the thread (see WriteWithRetry()): the chunk is wanted
+ * while no flush has come since it was taken from the queue. The flushes
+ * wait only for a write() that runs (writing = 1 until ChunkWritten()), not
+ * for a wait for room: in the Vu+ driver that wait cannot be ended early. */
+static int ChunkWanted(void *arg, int writing)
+{
+    const WriteTicket_t *ticket = arg;
+    int wanted;
+
+    pthread_mutex_lock(&bufferingMtx);
+    wanted = !g_bClosing && ticket->flushSerial == g_flushSerial &&
+             (!ticket->audio || ticket->audioFlushSerial == g_audioFlushSerial);
+    if (wanted && writing)
+    {
+        g_bDuringWrite = true;
+        g_bWritingAudio = ticket->audio;
+    }
+    pthread_mutex_unlock(&bufferingMtx);
+    return wanted;
+}
+
+static void ChunkWritten(void *arg)
+{
+    (void)arg;
+    pthread_mutex_lock(&bufferingMtx);
+    g_bDuringWrite = false;
+    g_bWritingAudio = false;
+    if (g_bSignalWriteFinish)
+    {
+        pthread_cond_broadcast(&bufferingWriteFinishedCond);
+        g_bSignalWriteFinish = false;
+    }
+    pthread_mutex_unlock(&bufferingMtx);
+}
+
 /* **************************** */
 /* Worker Thread                */
 /* **************************** */
-static void LinuxDvbBuffThread(Context_t *context)
+static void LinuxDvbBuffThread(Context_t *context) 
 {
     int flags = 0;
     static BufferingNode_t *nodePtr = NULL;
@@ -116,26 +173,26 @@ static void LinuxDvbBuffThread(Context_t *context)
 
     if (pipe(g_pfd) == -1)
         buff_err("critical error\n");
-
+    
     /* Make read and write ends of pipe nonblocking */
     if ((flags = fcntl(g_pfd[0], F_GETFL)) == -1)
         buff_err("critical error\n");
-
+    
     /* Make read end nonblocking */
     flags |= O_NONBLOCK;
     if (fcntl(g_pfd[0], F_SETFL, flags) == -1)
         buff_err("critical error\n");
-
+    
     if ((flags = fcntl(g_pfd[1], F_GETFL)) == -1)
         buff_err("critical error\n");
-
+    
     /* Make write end nonblocking */
     flags |= O_NONBLOCK;
     if (fcntl(g_pfd[1], F_SETFL, flags) == -1)
         buff_err("critical error\n");
 
     PlaybackDieNowRegisterCallback(WriteWakeUp);
-
+    
     while (0 == PlaybackDieNow(0))
     {
         pthread_mutex_lock(&bufferingMtx);
@@ -155,10 +212,16 @@ static void LinuxDvbBuffThread(Context_t *context)
             pthread_cond_signal(&bufferingDataConsumedCond);
         }
 
+        if (g_bClosing)
+        {
+            pthread_mutex_unlock(&bufferingMtx);
+            break;
+        }
+        
         if (!bufferingQueueHead)
         {
             assert(bufferingQueueTail == NULL);
-
+            
             /* Queue is empty we need to wait for data to be added */
             pthread_cond_wait(&bufferingdDataAddedCond, &bufferingMtx);
             pthread_mutex_unlock(&bufferingMtx);
@@ -172,7 +235,7 @@ static void LinuxDvbBuffThread(Context_t *context)
             {
                 bufferingQueueTail = NULL;
             }
-
+            
             if (bufferingDataSize >= (nodePtr->dataSize + sizeof(BufferingNode_t)))
             {
                 bufferingDataSize -= (nodePtr->dataSize + sizeof(BufferingNode_t));
@@ -184,25 +247,58 @@ static void LinuxDvbBuffThread(Context_t *context)
             }
         }
 
-        /* We will write data without mutex
-         * this have some disadvantage because we can
-         * write some portion of data after LinuxDvbBuffFlush,
-         * for example after seek.
-         */
+        if (nodePtr && nodePtr->dataType == OUTPUT_VIDEO && context->playback->isSeeking &&
+            context->playback->stamp == nodePtr->stamp)
+        {
+            /* An audio switch without a seek (live, paused, trick, DASH
+             * before its clear) keeps the stamp: the video waits for its end
+             * instead of being dropped. A seek changes the stamp, the node
+             * is dropped then. The audio of the old track goes, as before. */
+            DropQueuedAudio();
+            nodePtr->next = bufferingQueueHead;
+            bufferingQueueHead = nodePtr;
+            if (bufferingQueueTail == NULL)
+            {
+                bufferingQueueTail = nodePtr;
+            }
+            bufferingDataSize += nodePtr->dataSize + sizeof(BufferingNode_t);
+            nodePtr = NULL;
+            pthread_mutex_unlock(&bufferingMtx);
+            usleep(10000);
+            continue;
+        }
+
+        /* The data is written without the mutex. A flush does not wait for
+         * the wait for room in the device, only for a write() that runs:
+         * the ticket of the chunk says whether a flush has come since it
+         * was taken from the queue, and then the rest of it is dropped,
+         * also when the wait for room ends after the flush (and after the
+         * clear of the device that follows it). */
         if (nodePtr && !context->playback->isSeeking &&
             (nodePtr->dataType == OUTPUT_VIDEO || !context->playback->isAudioSwitching) &&
             context->playback->stamp == nodePtr->stamp)
         {
-            /* Write data to valid output */
-            uint8_t *dataPtr = (uint8_t *)nodePtr + sizeof(BufferingNode_t);
+            /* Write data to valid output, segment by segment */
+            uint8_t *dataPtr = NODE_DATA(nodePtr);
+            const uint32_t *segments = NODE_SEGMENTS(nodePtr);
+            uint32_t seg;
             int fd = nodePtr->dataType == OUTPUT_VIDEO ? videofd : audiofd;
-            g_bDuringWrite = true;
-            g_bWritingAudio = nodePtr->dataType == OUTPUT_AUDIO;
+            WriteTicket_t ticket = {g_flushSerial, g_audioFlushSerial, nodePtr->dataType == OUTPUT_AUDIO};
+            const WriteGuard_t guard = {ChunkWanted, ChunkWritten, &ticket};
             pthread_mutex_unlock(&bufferingMtx);
-            if (0 != WriteWithRetry(context, g_pfd[0], fd, g_pDVBMtx, dataPtr,
-                                   nodePtr->dataSize, nodePtr->dataType == OUTPUT_VIDEO))
+            for (seg = 0; seg < nodePtr->segCount; seg++)
             {
-                buff_err("Something is WRONG\n");
+                if (segments[seg] && 0 != WriteWithRetry(context, g_pfd[0], fd, &guard, dataPtr,
+                                                         segments[seg], nodePtr->dataType == OUTPUT_VIDEO))
+                {
+                    buff_err("Something is WRONG\n");
+                    break;
+                }
+                if (!ChunkWanted(&ticket, 0))
+                {
+                    break;
+                }
+                dataPtr += segments[seg];
             }
         }
         else
@@ -210,18 +306,27 @@ static void LinuxDvbBuffThread(Context_t *context)
             pthread_mutex_unlock(&bufferingMtx);
         }
     }
-
+    
     pthread_mutex_lock(&bufferingMtx);
-    pthread_cond_signal(&bufferingExitCond);
-    pthread_mutex_unlock(&bufferingMtx);
-
-    buff_printf(20, "EXIT\n");
-    hasBufferingThreadStarted = false;
-
+    /* the node written last is freed by the next turn of the loop only */
+    free(nodePtr);
+    nodePtr = NULL;
+    /* no write is running any more: release a flush that waits for its end */
+    g_bDuringWrite = false;
+    g_bWritingAudio = false;
+    g_bSignalWriteFinish = false;
+    pthread_cond_broadcast(&bufferingWriteFinishedCond);
+    /* the close looks at the flag as soon as it is woken, and the thread
+     * of the next open makes a pipe of its own: both before the signal */
     close(g_pfd[0]);
     close(g_pfd[1]);
     g_pfd[0] = -1;
     g_pfd[1] = -1;
+    hasBufferingThreadStarted = false;
+    pthread_cond_signal(&bufferingExitCond);
+    pthread_mutex_unlock(&bufferingMtx);
+    
+    buff_printf(20, "EXIT\n");
 }
 
 int32_t LinuxDvbBuffSetSize(const uint32_t bufferSize)
@@ -239,16 +344,17 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
 {
     int32_t error = 0;
     int32_t ret = cERR_LINUX_DVB_BUFFERING_NO_ERROR;
-
+    
     buff_printf(10, "\n");
 
-    if (!hasBufferingThreadStarted)
+    if (!hasBufferingThreadStarted) 
     {
         pthread_attr_t attr;
         pthread_attr_init(&attr);
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-        g_pDVBMtx = mtx;
+        (void)mtx;
+        g_bClosing = false;
 
         /* init synchronization prymitives, the thread uses them at once */
         pthread_mutex_init(&bufferingMtx, NULL);
@@ -258,6 +364,8 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         pthread_cond_init(&bufferingWriteFinishedCond, NULL);
         pthread_cond_init(&bufferingdDataAddedCond, NULL);
 
+        /* set before the thread runs: it clears the flag when it ends */
+        hasBufferingThreadStarted = true;
         if((error = pthread_create(&bufferingThread, &attr, (void *)&LinuxDvbBuffThread, context)) != 0) 
         {
             buff_printf(10, "Creating thread, error:%d:%s\n", error, strerror(error));
@@ -265,13 +373,12 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
             hasBufferingThreadStarted = false;
             ret = cERR_LINUX_DVB_BUFFERING_ERROR;
         }
-        else
+        else 
         {
             buff_printf(10, "Created thread\n");
-            hasBufferingThreadStarted = true;
         }
     }
-
+    
     if (!ret)
     {
         if (!strcmp("video", type) && -1 == videofd)
@@ -295,37 +402,41 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
 int32_t LinuxDvbBuffClose(Context_t *context)
 {
     int32_t ret = 0;
-
+    
     buff_printf(10, "\n");
     videofd = -1;
     audiofd = -1;
-
-    if (hasBufferingThreadStarted)
+    
+    if (hasBufferingThreadStarted) 
     {
         struct timespec max_wait = {0, 0};
-
-        /* WakeUp if we are waiting in the write */
+        
+        /* WakeUp if we are waiting in the write */ 
         WriteWakeUp();
-
+        
         pthread_mutex_lock(&bufferingMtx);
-        /* wake up if thread is waiting for data */
+        /* the thread leaves its loop also when PlaybackDieNow is not set */
+        g_bClosing = true;
+        /* wake up if thread is waiting for data */ 
         pthread_cond_signal(&bufferingdDataAddedCond);
-
+        
         /* wait for thread end */
 #if 0
-        /* This code couse symbol versioning of clock_gettime@GLIBC_2.17 */
+        /* This code causes symbol versioning of clock_gettime@GLIBC_2.17 */
         clock_gettime(CLOCK_REALTIME, &max_wait);
         max_wait.tv_sec += 1;
 #else
         max_wait.tv_sec = time(NULL) + 2;
 #endif
-        pthread_cond_timedwait(&bufferingExitCond, &bufferingMtx, &max_wait);
+        /* the thread clears the flag under the lock before it signals */
+        while (hasBufferingThreadStarted &&
+               0 == pthread_cond_timedwait(&bufferingExitCond, &bufferingMtx, &max_wait));
         pthread_mutex_unlock(&bufferingMtx);
 
         if (!hasBufferingThreadStarted)
         {
             /* destroy synchronization prymitives?
-             * for a moment, we'll exit linux process,
+             * for a moment, we'll exit linux process, 
              * so the system will do this for us
              */
             /*
@@ -336,7 +447,7 @@ int32_t LinuxDvbBuffClose(Context_t *context)
             */
         }
     }
-
+    
     ret = hasBufferingThreadStarted ? cERR_LINUX_DVB_BUFFERING_ERROR : cERR_LINUX_DVB_BUFFERING_NO_ERROR;
 
     buff_printf(10, "exiting with value %d\n", ret);
@@ -347,7 +458,7 @@ int32_t LinuxDvbBuffFlush(Context_t *context)
 {
     static BufferingNode_t *nodePtr = NULL;
     buff_printf(40, "ENTER bufferingQueueHead[%p]\n", bufferingQueueHead);
-
+    
     /* signal if we are waiting for write to DVB decoders */
     WriteWakeUp();
 
@@ -368,6 +479,8 @@ int32_t LinuxDvbBuffFlush(Context_t *context)
     /* signal that queue is empty */
     pthread_cond_signal(&bufferingDataConsumedCond);
 
+    /* the chunk the thread holds is not written after this, see ChunkWanted() */
+    g_flushSerial++;
     while (g_bDuringWrite && !PlaybackDieNow(0))
     {
         g_bSignalWriteFinish = true;
@@ -376,25 +489,39 @@ int32_t LinuxDvbBuffFlush(Context_t *context)
 
     pthread_mutex_unlock(&bufferingMtx);
     buff_printf(40, "EXIT\n");
-
+    
     return 0;
 }
 
 int32_t LinuxDvbBuffResume(Context_t *context)
 {
-    /* signal if we are waiting for write to DVB decoders
-     *
+    /* signal if we are waiting for write to DVB decoders 
+     * 
      */
     WriteWakeUp();
-
+    
     return 0;
 }
 
 int32_t LinuxDvbBuffFlushAudio(Context_t *context)
 {
-    BufferingNode_t **link;
     WriteWakeUp();
     pthread_mutex_lock(&bufferingMtx);
+    DropQueuedAudio();
+    g_audioFlushSerial++;
+    while (g_bWritingAudio && !PlaybackDieNow(0))
+    {
+        g_bSignalWriteFinish = true;
+        pthread_cond_wait(&bufferingWriteFinishedCond, &bufferingMtx);
+    }
+    pthread_mutex_unlock(&bufferingMtx);
+    return 0;
+}
+
+/* The queued audio chunks are freed, the video stays; bufferingMtx is held. */
+static void DropQueuedAudio(void)
+{
+    BufferingNode_t **link;
     bufferingQueueTail = NULL;
     for (link = &bufferingQueueHead; *link; )
     {
@@ -412,13 +539,6 @@ int32_t LinuxDvbBuffFlushAudio(Context_t *context)
         }
     }
     pthread_cond_signal(&bufferingDataConsumedCond);
-    while (g_bWritingAudio && !PlaybackDieNow(0))
-    {
-        g_bSignalWriteFinish = true;
-        pthread_cond_wait(&bufferingWriteFinishedCond, &bufferingMtx);
-    }
-    pthread_mutex_unlock(&bufferingMtx);
-    return 0;
 }
 
 void LinuxDvbBuffSetStamp(void *stamp)
@@ -426,15 +546,24 @@ void LinuxDvbBuffSetStamp(void *stamp)
     g_pWriteStamp = stamp;
 }
 
-ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
+ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic) 
 {
     OutputType_t dataType = OUTPUT_UNK;
     BufferingNode_t *nodePtr = NULL;
     uint8_t *dataPtr = NULL;
     uint32_t chunkSize = 0;
     uint32_t i = 0;
-
+    bool queued = false;
+    
     buff_printf(60, "ENTER\n");
+    if (fd < 0)
+    {
+        /* a device whose open has failed: the buffering keeps -1 for a
+         * device it was not given, the chunk would be queued for that one */
+        buff_err("output device not open\n");
+        errno = EBADF;
+        return cERR_LINUX_DVB_BUFFERING_ERROR;
+    }
     if (fd == videofd)
     {
         buff_printf(60, "VIDEO\n");
@@ -444,6 +573,16 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
     {
         buff_printf(60, "AUDIO\n");
         dataType = OUTPUT_AUDIO;
+    }
+    else if (PlaybackDieNow(0))
+    {
+        /* the stop has closed the buffering before the play thread ended
+         * (see LinuxDvbStop()): the chunk is dropped, as below */
+        for (i = 0; i < ic; ++i)
+        {
+            chunkSize += iov[i].iov_len;
+        }
+        return chunkSize;
     }
     else
     {
@@ -456,19 +595,21 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
         chunkSize += iov[i].iov_len;
     }
     chunkSize += sizeof(BufferingNode_t);
-
+    
     /* Allocate memory for queue node + data */
-    nodePtr = malloc(chunkSize);
+    nodePtr = malloc(chunkSize + ic * sizeof(uint32_t));
     if (!nodePtr)
     {
         buff_err("OUT OF MEM\n");
         return cERR_LINUX_DVB_BUFFERING_ERROR;
     }
-
+    nodePtr->segCount = ic;
+    
     /* Copy data to new buffer */
-    dataPtr = (uint8_t *)nodePtr + sizeof(BufferingNode_t);
+    dataPtr = NODE_DATA(nodePtr);
     for (i=0; i<ic; ++i)
     {
+        NODE_SEGMENTS(nodePtr)[i] = iov[i].iov_len;
         memcpy(dataPtr, iov[i].iov_base, iov[i].iov_len);
         dataPtr += iov[i].iov_len;
     }
@@ -495,20 +636,27 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
                 bufferingQueueTail->next = nodePtr;
                 bufferingQueueTail = nodePtr;
             }
-
+            
             bufferingDataSize += chunkSize;
             chunkSize -= sizeof(BufferingNode_t);
             nodePtr->dataSize = chunkSize;
             nodePtr->dataType = dataType;
             nodePtr->stamp = g_pWriteStamp;
             nodePtr->next = NULL;
-
+            
             /* signal that we added some data to queue */
             pthread_cond_signal(&bufferingdDataAddedCond);
+            queued = true;
             break;
         }
     }
     pthread_mutex_unlock(&bufferingMtx);
+    if (!queued)
+    {
+        /* the playback is terminated: the chunk is dropped */
+        free(nodePtr);
+        chunkSize -= sizeof(BufferingNode_t);
+    }
     buff_printf(60, "EXIT\n");
     return chunkSize;
 }

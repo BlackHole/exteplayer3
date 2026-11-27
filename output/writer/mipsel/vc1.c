@@ -50,7 +50,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants	      */
+/* Macros/Constants	      */
 /* ***************************** */
 #define VC1_SEQUENCE_LAYER_METADATA_START_CODE  0x80
 #define VC1_FRAME_START_CODE 0x0d
@@ -63,7 +63,7 @@ static const unsigned char  SequenceLayerStartCode[] = {0x00,    0x00,   0x01,  
 static const  uint8_t Vc1FrameStartCode[]     = {0, 0, 1, VC1_FRAME_START_CODE};
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static int initialHeader = 1;
 static video_codec_data_t videocodecdata = {0, 0};
@@ -85,38 +85,36 @@ static int writeData(void* _call)
 {
     WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
 
-    int len = 0;
-
     vc1_printf(10, "\n");
 
-    if (call == NULL)
+    if (call == NULL) 
     {
         vc1_err("call data is NULL...\n");
         return 0;
     }
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0)) 
     {
         vc1_err("parsing NULL Data. ignoring...\n");
         return 0;
     }
 
-    if (call->fd < 0)
+    if (call->fd < 0) 
     {
         vc1_err("file pointer < 0. ignoring ...\n");
         return 0;
     }
 
-    vc1_printf(10, "VideoPts %lld\n", call->Pts);
-    vc1_printf(10, "Got Private Size %d\n", call->private_size);
-
+    vc1_printf(10, "VideoPts %llu\n", call->Pts);
+    vc1_printf(10, "Got Private Size %u\n", call->private_size);
+    
     unsigned char PesHeader[PES_MAX_HEADER_SIZE + sizeof(Vc1FrameStartCode)];
     int32_t ic = 0;
     struct iovec iov[5];
     unsigned int PacketLength = 0;
-
+    
     iov[ic++].iov_base = PesHeader;
-    if (initialHeader)
+    if (initialHeader) 
     {
         initialHeader = 0;
         if(videocodecdata.data)
@@ -127,6 +125,13 @@ static int writeData(void* _call)
 
         videocodecdata.length = call->private_size + 8;
         videocodecdata.data  = malloc(videocodecdata.length);
+        if (!videocodecdata.data)
+        {
+            /* the codec data again with the next frame */
+            vc1_err("allocating codec data failed\n");
+            initialHeader = 1;
+            return 0;
+        }
         memset(videocodecdata.data, 0, videocodecdata.length);
         memcpy(videocodecdata.data + 8, call->private_data, call->private_size);
         if(STB_DREAMBOX == GetSTBType() || 0 != ioctl(call->fd, VIDEO_SET_CODEC_DATA, &videocodecdata))
@@ -137,23 +142,26 @@ static int writeData(void* _call)
         }
     }
 
+    /* A frame without a start code gets one. A packet that starts with any
+     * start code (sequence header, entry point, frame) has its own: a frame
+     * start code in front of a sequence header would be an empty frame. */
     uint8_t needFrameStartCode = 0;
     if( sizeof(Vc1FrameStartCode) >= call->len
-        || memcmp(call->data, Vc1FrameStartCode, sizeof(Vc1FrameStartCode)) != 0 )
+        || memcmp(call->data, Vc1FrameStartCode, 3) != 0 )
     {
         needFrameStartCode = 1;
         PacketLength += sizeof(Vc1FrameStartCode);
     }
-
+    
     iov[ic].iov_base  = call->data;
     iov[ic++].iov_len = call->len;
     PacketLength     += call->len;
-
+    
     iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength, MPEG_VIDEO_PES_START_CODE, call->Pts, 0);
 
     /* some mipsel receiver(s) like et4x00 needs to have Copy(0)/Original(1) flag set to Original */
     PesHeader[6] |= 1;
-
+    
     if(needFrameStartCode)
     {
         memcpy(PesHeader + iov[0].iov_len, Vc1FrameStartCode, sizeof(Vc1FrameStartCode) );

@@ -54,7 +54,7 @@
 #include "ffmpeg/xiph.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -62,7 +62,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 
@@ -83,13 +83,18 @@ static int writeData(void *_call)
 {
     WriterAVCallData_t *call = (WriterAVCallData_t*) _call;
 
-    if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0 || \
-        !call->private_data || call->private_size != sizeof(pcmPrivateData_t)) {
-        bcma_err("Wrong input call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
+    if (call == NULL) {
+        bcma_err("call data is NULL...\n");
         return 0;
     }
 
-    bcma_printf(10, "AudioPts %lld\n", call->Pts);
+    if (call->data == NULL || call->len == 0 || call->fd < 0 || \
+        !call->private_data || call->private_size != sizeof(pcmPrivateData_t)) {
+        bcma_err("Wrong input call: %p, data: %p, len: %u, fd: %d\n", call, call->data, call->len, call->fd);
+        return 0;
+    }
+
+    bcma_printf(10, "AudioPts %llu\n", call->Pts);
     uint8_t PesHeader[PES_MAX_HEADER_SIZE + 22];
     uint32_t i;
     uint32_t private_size = 0;
@@ -99,11 +104,11 @@ static int writeData(void *_call)
     pcmPrivateData_t *pcmPrivateData  = (pcmPrivateData_t*)call->private_data;
 
     uint32_t headerSize = InsertPesHeader(PesHeader, call->len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
-
+    
     if (pcmPrivateData->codec_id == AV_CODEC_ID_VORBIS) {
 
         if (avpriv_split_xiph_headers(pcmPrivateData->private_data, pcmPrivateData->private_size, 30, vorbis_header_start, vorbis_header_len) < 0) {
-            bcma_err("Wrong VORBIS codec data : %p, len: %d\n", pcmPrivateData->private_data, pcmPrivateData->private_size);
+            bcma_err("Wrong VORBIS codec data : %p, len: %u\n", pcmPrivateData->private_data, pcmPrivateData->private_size);
             return -1;
         }
 
@@ -124,7 +129,9 @@ static int writeData(void *_call)
         PesHeader[headerSize++] = 'A';
     }
 
-    if (pcmPrivateData->codec_id != AV_CODEC_ID_VORBIS || pcmPrivateData->codec_id != AV_CODEC_ID_OPUS || STB_HISILICON != GetSTBType()) {
+    /* HiSilicon: no payload size and stream description for Vorbis and Opus */
+    if (!((pcmPrivateData->codec_id == AV_CODEC_ID_VORBIS || pcmPrivateData->codec_id == AV_CODEC_ID_OPUS) &&
+          STB_HISILICON == GetSTBType())) {
         uint32_t payloadSize = call->len;
         PesHeader[headerSize++] = (payloadSize >> 24) & 0xFF;
         PesHeader[headerSize++] = (payloadSize >> 16) & 0xFF;
@@ -157,6 +164,8 @@ static int writeData(void *_call)
             bits_per_sample = 8;
             byte_rate = 32000;
             block_align = 1;
+            /* fall through: no format tag */
+            FALLTHROUGH;
         default:
             format_tag = 0xFFFF;
             break;

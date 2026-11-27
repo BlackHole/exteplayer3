@@ -1,0 +1,151 @@
+#include <assert.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+
+extern Manager_t AudioManager, VideoManager, SubtitleManager;
+static pthread_rwlock_t container_lock = PTHREAD_RWLOCK_INITIALIZER;
+
+int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int initial)
+{
+    (void)context;
+    (void)filename;
+    (void)initial;
+    pthread_rwlock_wrlock(&container_lock);
+    pthread_rwlock_unlock(&container_lock);
+    return 0;
+}
+
+static void check_manager(Manager_t *manager, Context_t *context)
+{
+    Track_t track = {0}, *stored = NULL;
+    int id = 7;
+    track.Id = id;
+    track.Name = "first";
+    track.Encoding = "test";
+    track.stream = (void *)1;
+    assert(!manager->Command(context, MANAGER_ADD, &track));
+    assert(!manager->Command(context, MANAGER_SET, &id));
+    track.Name = "second";
+    track.stream = (void *)2;
+    track.AVIdx = 1;
+    track.is_forced = 1;
+    track.audio_info.sample_rate = 48000;
+    track.audio_info.bit_rate = 640000;
+    snprintf(track.audio_info.channel_layout, sizeof(track.audio_info.channel_layout), "5.1(side)");
+    snprintf(track.video_info.profile_level, sizeof(track.video_info.profile_level), "Main 10@5.1");
+    track.video_info.bit_depth = 10;
+    track.aacbuf = malloc(4);
+    assert(track.aacbuf);
+    assert(!manager->Command(context, MANAGER_ADD, &track));
+    assert(!manager->Command(context, MANAGER_GET_TRACK, &stored));
+    assert(stored && stored->stream == (void *)2 && stored->AVIdx == 1);
+    assert(!strcmp(stored->Name, "second"));
+    assert(stored->is_forced == 1);
+    if (manager == &AudioManager)
+    {
+        /* the a_l and a_c values of the replaced track */
+        TrackDescription_t *list = NULL, *desc = NULL;
+        assert(!manager->Command(context, MANAGER_GET_TRACK_DESC, &desc));
+        assert(desc && desc->audio_info.sample_rate == 48000 && desc->audio_info.bit_rate == 640000 &&
+               !strcmp(desc->audio_info.channel_layout, "5.1(side)"));
+        free(desc->Name);
+        free(desc->Encoding);
+        free(desc->Title);
+        free(desc);
+        assert(!manager->Command(context, MANAGER_LIST, &list));
+        assert(list && list[0].audio_info.sample_rate == 48000 && list[0].audio_info.bit_rate == 640000 && list[1].Id == -1);
+        free(list[0].Name);
+        free(list[0].Encoding);
+        free(list[0].Title);
+        free(list);
+    }
+    if (manager == &VideoManager)
+    {
+        /* the v_l values */
+        TrackDescription_t *list = NULL;
+        assert(!manager->Command(context, MANAGER_LIST, &list));
+        assert(list && !strcmp(list[0].video_info.profile_level, "Main 10@5.1") &&
+               list[0].video_info.bit_depth == 10 && list[1].Id == -1);
+        free(list[0].Name);
+        free(list[0].Encoding);
+        free(list);
+    }
+    if (manager == &SubtitleManager)
+    {
+        TrackDescription_t *list = NULL, *desc = NULL;
+        Track_t *refs = NULL;
+        int size = 0;
+        assert(!manager->Command(context, MANAGER_REF_LIST, &refs) && refs == stored);
+        assert(!manager->Command(context, MANAGER_REF_LIST_SIZE, &size) && size == 1);
+        assert(!manager->Command(context, MANAGER_GET_TRACK_DESC, &desc));
+        assert(desc && desc->is_forced == 1);
+        free(desc->Name);
+        free(desc->Encoding);
+        free(desc);
+        assert(!manager->Command(context, MANAGER_LIST, &list));
+        assert(list && list[0].is_forced == 1 && list[1].Id == -1);
+        free(list[0].Name);
+        free(list[0].Encoding);
+        free(list);
+    }
+    /* Refreshing from the same owned buffer must not free that buffer. */
+    track = *stored;
+    assert(!manager->Command(context, MANAGER_ADD, &track));
+    stored->aacbuf[0] = 42;
+    assert(!manager->Command(context, MANAGER_DEL, NULL));
+}
+
+struct thread_args { Context_t *context; Manager_t *manager; };
+static void *lists(void *opaque)
+{
+    struct thread_args *args = opaque;
+    int i;
+    for (i = 0; i < 1000; i++)
+    {
+        TrackDescription_t *list = NULL;
+        assert(!args->manager->Command(args->context, MANAGER_LIST, &list));
+        if (list)
+        {
+            int j;
+            for (j = 0; list[j].Id >= 0; j++)
+            {
+                free(list[j].Name);
+                free(list[j].Encoding);
+            }
+            free(list);
+        }
+    }
+    return NULL;
+}
+
+int main(void)
+{
+    Context_t context = {0};
+    PlaybackHandler_t playback = {0};
+    Manager_t *managers[] = {&AudioManager, &VideoManager, &SubtitleManager};
+    unsigned int i;
+    context.playback = &playback;
+    for (i = 0; i < sizeof(managers) / sizeof(managers[0]); i++)
+    {
+        pthread_t thread;
+        struct thread_args args = {&context, managers[i]};
+        int j;
+        check_manager(managers[i], &context);
+        assert(!pthread_create(&thread, NULL, lists, &args));
+        for (j = 0; j < 1000; j++)
+        {
+            Track_t track = {0};
+            track.Id = 1;
+            track.Name = "concurrent";
+            track.Encoding = "test";
+            pthread_rwlock_rdlock(&container_lock);
+            assert(!managers[i]->Command(&context, MANAGER_ADD, &track));
+            pthread_rwlock_unlock(&container_lock);
+        }
+        assert(!pthread_join(thread, NULL));
+        assert(!managers[i]->Command(&context, MANAGER_DEL, NULL));
+    }
+    return 0;
+}

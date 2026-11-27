@@ -48,7 +48,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -56,7 +56,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static int initialHeader = 1;
 
@@ -77,7 +77,7 @@ static uint8_t updateCodecData(uint8_t *data, int32_t size)
 {
     static uint8_t *oldData = NULL;
     static int32_t oldSize = 0;
-
+    
     uint8_t update = 0;
     if (data != NULL && size > 0)
     {
@@ -106,8 +106,10 @@ static uint8_t updateCodecData(uint8_t *data, int32_t size)
             free(oldData);
         }
         oldData = malloc(size);
-        memcpy(oldData, data, size);
-        oldSize = size;
+        if (oldData)
+            memcpy(oldData, data, size);
+        /* without a copy the next codec data counts as new */
+        oldSize = oldData ? size : 0;
     }
 
     return update;
@@ -133,7 +135,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         divx_err("parsing NULL Data. ignoring...\n");
         return 0;
@@ -145,10 +147,10 @@ static int writeData(void* _call)
         return 0;
     }
 
-    divx_printf(10, "AudioPts %lld\n", call->Pts);
+    divx_printf(10, "AudioPts %llu\n", call->Pts);
 
     usecPerFrame = 1000000000 / call->FrameRate;
-    divx_printf(10, "Microsecends per frame = %d\n", usecPerFrame);
+    divx_printf(10, "Microsecends per frame = %u\n", usecPerFrame);
 
     memset(FakeHeaders, 0, sizeof(FakeHeaders));
 
@@ -174,14 +176,14 @@ static int writeData(void* _call)
     iov[ic++].iov_len = InsertPesHeader (PesHeader, call->len, MPEG_VIDEO_PES_START_CODE, call->Pts, FakeStartCode);
     iov[ic].iov_base = FakeHeaders;
     iov[ic++].iov_len = FakeHeaderLength;
-
-    if (initialHeader)
+    
+    if (initialHeader) 
     {
         iov[ic].iov_base = call->private_data;
         iov[ic++].iov_len = call->private_size;
         initialHeader = 0;
     }
-
+    
     iov[ic].iov_base = call->data;
     iov[ic++].iov_len = call->len;
 

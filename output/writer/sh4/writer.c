@@ -25,12 +25,13 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #include "misc.h"
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 #ifdef SAM_WITH_DEBUG
@@ -60,7 +61,7 @@ if (debug_level >= level) printf(x); } while (0)
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static Writer_t * AvailableWriter[] = {
@@ -96,37 +97,41 @@ static Writer_t * AvailableWriter[] = {
 /* ***************************** */
 /*  Functions                    */
 /* ***************************** */
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size, int is_video)
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, const WriteGuard_t *guard, const void *buf, int size, int is_video)
 {
     fd_set rfds;
 
-    ssize_t ret;
+    /* also what is returned when nothing is written: stop, seek, audio
+     * switch or a failed select while paused, as on mipsel */
+    ssize_t ret = 0;
     int retval = -1;
+    int error;
     struct timeval tv;
 
     while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking &&
-          (is_video || !context->playback->isAudioSwitching))
+          (is_video || !context->playback->isAudioSwitching) &&
+          (!guard || guard->wanted(guard->arg, 0)))
     {
         if (context->playback->isPaused)
         {
             FD_ZERO(&rfds);
             FD_SET(pipefd, &rfds);
-
+            
             tv.tv_sec = 0;
             tv.tv_usec = 500000; // 500ms
-
+        
             retval = select(pipefd + 1, &rfds, NULL, NULL, &tv);
             if (retval < 0)
             {
                 break;
             }
-
+        
             if (retval == 0)
             {
                 //printf("RETURN FROM SELECT DUE TO TIMEOUT TIMEOUT\n");
                 continue;
             }
-
+            
             if(FD_ISSET(pipefd, &rfds))
             {
                 FlushPipe(pipefd);
@@ -134,13 +139,22 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
                 continue;
             }
         }
-
+        
         //printf(">> Before Write fd [%d]\n", fd);
+        if (guard && !guard->wanted(guard->arg, 1))
+        {
+            ret = 0;
+            break;
+        }
         ret = write(fd, buf, size);
+        error = errno;
+        if (guard)
+            guard->done(guard->arg);
+        errno = error;
         //printf(">> After Write ret[%d] size[%d]\n", (int)ret, size);
         if (ret == size)
             ret = 0; // no error
-
+        
         break;
     }
     return ret;

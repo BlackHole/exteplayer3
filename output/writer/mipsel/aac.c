@@ -56,7 +56,7 @@
 #include "aac.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -64,7 +64,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static bool needInitHeader = true;
 
@@ -115,6 +115,7 @@ static unsigned char DefaultAACHeader[]    =  {
 };
 
 LATMContext *pLATMCtx = NULL;
+static int latmResetPending = 0;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -124,13 +125,13 @@ LATMContext *pLATMCtx = NULL;
 /* MISC Functions                */
 /* ***************************** */
 
+/* reset() is called from the command thread while the demuxer thread can be
+ * inside writeData(), blocked in the write with the buffers of pLATMCtx in
+ * its iovec. The context therefore belongs to writeData() alone: reset() only
+ * leaves a request and the next writeData() starts it over. */
 static int reset()
 {
-    if (pLATMCtx)
-    {
-        free(pLATMCtx);
-        pLATMCtx = NULL;
-    }
+    __atomic_store_n(&latmResetPending, 1, __ATOMIC_RELEASE);
     needInitHeader = true;
     return 0;
 }
@@ -138,7 +139,7 @@ static int reset()
 static int _writeData(void *_call, int type)
 {
     WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
-
+    
     aac_printf(10, "\n _writeData type[%d]\n", type);
 
     if (call == NULL)
@@ -146,13 +147,13 @@ static int _writeData(void *_call, int type)
         aac_err("call data is NULL...\n");
         return 0;
     }
-
+    
     if ((call->data == NULL) || (call->len < 8))
     {
         aac_err("parsing Data with missing AAC header. ignoring...\n");
         return 0;
     }
-
+    
     /* simple validation */
     if (0 == type) // check ADTS header
     {
@@ -161,7 +162,7 @@ static int _writeData(void *_call, int type)
             aac_err("parsing Data with missing syncword. ignoring...\n");
             return 0;
         }
-
+        
         // STB can handle only AAC LC profile
         if (0 == (call->data[2] & 0xC0))
         {
@@ -179,10 +180,10 @@ static int _writeData(void *_call, int type)
             return 0;
         }
     }
-
+    
     unsigned char PesHeader[PES_MAX_HEADER_SIZE];
 
-    aac_printf(10, "AudioPts %lld\n", call->Pts);
+    aac_printf(10, "AudioPts %llu\n", call->Pts);
 
     unsigned int  HeaderLength = InsertPesHeader (PesHeader, call->len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
 
@@ -197,16 +198,16 @@ static int _writeData(void *_call, int type)
 static int writeDataADTS(void *_call)
 {
     WriterAVCallData_t *call = (WriterAVCallData_t *) _call;
-
+    
     aac_printf(10, "\n");
 
-    if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0)
+    if (call == NULL || call->data == NULL || call->len == 0 || call->fd < 0)
     {
         aac_err("call data is NULL...\n");
         return 0;
     }
 
-    if( (call->private_data && 0 == strncmp("ADTS", call->private_data, call->private_size)) ||
+    if( (call->private_data && 0 == strncmp("ADTS", call->private_data, call->private_size)) || 
         HasADTSHeader(call->data, call->len) )
     {
         //printf("%hhx %hhx %hhx %hhx %hhx %hhx %hhx %hhx\n", call->data[0], call->data[1], call->data[2], call->data[3], call->data[4], call->data[5], call->data[6], call->data[7]);
@@ -220,7 +221,7 @@ static int writeDataADTS(void *_call)
     uint8_t *pExtraData = &PesHeader[headerSize];
 
     needInitHeader = false;
-    aac_printf(10, "AudioPts %lld\n", call->Pts);
+    aac_printf(10, "AudioPts %llu\n", call->Pts);
     if (call->private_data == NULL) {
         aac_printf(10, "private_data = NULL\n");
         memcpy (pExtraData, DefaultAACHeader, AAC_HEADER_LENGTH);
@@ -241,7 +242,7 @@ static int writeDataADTS(void *_call)
     /* buffer fullness(0x7FF for VBR) continued over 6 first bits + 2 zeros for
      * number of raw data blocks */
     pExtraData[6] = 0xFC;
-
+    
     //PesHeader[6] = 0x81;
 
     struct iovec iov[2];
@@ -249,14 +250,14 @@ static int writeDataADTS(void *_call)
     iov[0].iov_len = headerSize + adtsHeaderSize;
     iov[1].iov_base = call->data;
     iov[1].iov_len = call->len;
-
+    
     return call->WriteV(call->fd, iov, 2);
 }
 
 static int writeDataLATM(void *_call)
 {
     WriterAVCallData_t *call = (WriterAVCallData_t *) _call;
-
+    
     aac_printf(10, "\n");
 
     if (call == NULL)
@@ -264,23 +265,22 @@ static int writeDataLATM(void *_call)
         aac_err("call data is NULL...\n");
         return 0;
     }
-
-    if ((call->data == NULL) || (call->len <= 0))
+    
+    if ((call->data == NULL) || (call->len == 0))
     {
         aac_err("parsing NULL Data. ignoring...\n");
         return 0;
     }
-
+    
     if( call->private_data && 0 == strncmp("LATM", call->private_data, call->private_size))
     {
         return _writeData(_call, 1);
     }
 
-    aac_printf(10, "AudioPts %lld\n", call->Pts);
-
-    if (!pLATMCtx)
+    aac_printf(10, "AudioPts %llu\n", call->Pts);
+    
+    if (__atomic_exchange_n(&latmResetPending, 0, __ATOMIC_ACQ_REL) && pLATMCtx)
     {
-        pLATMCtx = malloc(sizeof(LATMContext));
         memset(pLATMCtx, 0x00, sizeof(LATMContext));
         pLATMCtx->mod = 14;
         pLATMCtx->counter = 0;
@@ -288,10 +288,21 @@ static int writeDataLATM(void *_call)
 
     if (!pLATMCtx)
     {
+        pLATMCtx = malloc(sizeof(LATMContext));
+        if (pLATMCtx)
+        {
+            memset(pLATMCtx, 0x00, sizeof(LATMContext));
+            pLATMCtx->mod = 14;
+            pLATMCtx->counter = 0;
+        }
+    }
+    
+    if (!pLATMCtx)
+    {
         aac_err("parsing NULL pLATMCtx. ignoring...\n");
         return 0;
     }
-
+    
     unsigned char PesHeader[PES_MAX_HEADER_SIZE];
     int ret = latmenc_decode_extradata(pLATMCtx, call->private_data, call->private_size);
     if (ret)
@@ -307,19 +318,19 @@ static int writeDataLATM(void *_call)
         aac_err("latm_write_packet failed. ignoring...\n");
         return 0;
     }
-
+    
     unsigned int  HeaderLength = InsertPesHeader (PesHeader,  pLATMCtx->len + 3, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
 
     struct iovec iov[3];
     iov[0].iov_base = PesHeader;
     iov[0].iov_len  = HeaderLength;
-
+    
     iov[1].iov_base = pLATMCtx->loas_header;
     iov[1].iov_len  = 3;
-
+    
     iov[2].iov_base = pLATMCtx->buffer;
     iov[2].iov_len  = pLATMCtx->len;
-
+    
     return call->WriteV(call->fd, iov, 3);
 }
 

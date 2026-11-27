@@ -48,7 +48,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -56,7 +56,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -86,9 +86,9 @@ static int writeData(void* _call)
         return 0;
     }
 
-    mp3_printf(10, "AudioPts %lld\n", call->Pts);
+    mp3_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         mp3_err("parsing NULL Data. ignoring...\n");
         return 0;

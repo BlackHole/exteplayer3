@@ -27,6 +27,9 @@
 #include <errno.h>
 #include <pthread.h>
 #include <limits.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
 
 #include "misc.h"
 #include "writer.h"
@@ -34,23 +37,27 @@
 #include "debug.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define getDVBMutex(pmtx) do { if (pmtx) pthread_mutex_lock(pmtx);} while(false);
 #define releaseDVBMutex(pmtx) do { if (pmtx) pthread_mutex_unlock(pmtx);} while(false);
+
+/* longest wait of writev_with_retry() for room in a full device without a
+ * sign from it: a safety net, room and WriterWakeUp() end the wait earlier */
+#define WRITER_WAIT_MS 100
 
 /* ***************************** */
 /* Types                         */
 /* ***************************** */
 typedef enum {
-    DVB_STS_UNKNOWN,
-    DVB_STS_SEEK,
-    DVB_STS_PAUSE,
+    DVB_STS_UNKNOWN, 
+    DVB_STS_SEEK, 
+    DVB_STS_PAUSE, 
     DVB_STS_EXIT
-} DVBState_t;
+} DVBState_t; 
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static Writer_t * AvailableWriter[] = {
@@ -65,7 +72,6 @@ static Writer_t * AvailableWriter[] = {
     &WriterAudioIPCM,
     &WriterAudioLPCM,
     &WriterAudioDTS,
-    &WriterAudioDTSHD,
     &WriterAudioWMA,
     &WriterAudioWMAPRO,
     &WriterAudioOPUS,
@@ -87,9 +93,16 @@ static Writer_t * AvailableWriter[] = {
     &WriterVideoMJPEG,
     &WriterVideoRV40,
     &WriterVideoRV30,
+#ifdef HAVE_DREAMNEXTGEN
+    &WriterVideoAVS,
+#endif
     &WriterVideoAVS2,
     NULL
 };
+
+/* the wake-up pipe of writev_with_retry(), see WriterWakeUp() */
+static int writerWakePipe[2] = {-1, -1};
+static pthread_once_t writerWakeOnce = PTHREAD_ONCE_INIT;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -98,7 +111,27 @@ static Writer_t * AvailableWriter[] = {
 /* ***************************** */
 /*  Functions                    */
 /* ***************************** */
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size, int is_video)
+/* write() under the guard of the caller: *dropped is set, and nothing is
+ * written, when the caller does not want the data any more. */
+static ssize_t GuardedWrite(const WriteGuard_t *guard, int fd, const void *buf, int size, bool *dropped)
+{
+    ssize_t ret;
+    int error;
+
+    if (guard && !guard->wanted(guard->arg, 1))
+    {
+        *dropped = true;
+        return 0;
+    }
+    ret = write(fd, buf, size);
+    error = errno;
+    if (guard)
+        guard->done(guard->arg);
+    errno = error;
+    return ret;
+}
+
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, const WriteGuard_t *guard, const void *buf, int size, int is_video)
 {
     fd_set rfds;
     fd_set wfds;
@@ -107,67 +140,114 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
     int retval = -1;
     int maxFd = pipefd > fd ? pipefd : fd;
     struct timeval tv;
+    const bool writeFirst = STB_HISILICON == GetSTBType();
+    bool dropped = false;
 
+    /* The guard is asked before each wait as well: a select() can return
+     * long after the data was dropped (the Broadcom driver of the Vu+ sleeps
+     * in its poll callback up to 5 s when a pause comes meanwhile). */
     while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking &&
-          (is_video || !context->playback->isAudioSwitching))
+          (is_video || !context->playback->isAudioSwitching) &&
+          (!guard || guard->wanted(guard->arg, 0)))
     {
+        if (writeFirst)
+        {
+            /* The devices of these boxes may never report that they are
+             * writable, so do not wait for that: write, and only when the
+             * device takes nothing wait for it or for the wake-up pipe,
+             * 50 ms at most. */
+            ret = GuardedWrite(guard, fd, buf, size, &dropped);
+            if (dropped)
+                break;
+            if (ret > 0)
+            {
+                size -= ret;
+                buf += ret;
+                continue;
+            }
+            if (ret < 0 && errno != EINTR && errno != EAGAIN)
+            {
+                /* a hard error of the device: the caller drops the rest */
+                writer_err("write failed: %s\n", strerror(errno));
+                return -1;
+            }
+
+            FD_ZERO(&rfds);
+            FD_ZERO(&wfds);
+            FD_SET(pipefd, &rfds);
+            FD_SET(fd, &wfds);
+            tv.tv_sec = 0;
+            tv.tv_usec = 50000; // 50ms
+            retval = select(maxFd + 1, &rfds, &wfds, NULL, &tv);
+            if (retval < 0 && errno != EINTR)
+            {
+                writer_err("select failed: %s\n", strerror(errno));
+                return -1;
+            }
+            if (retval > 0 && FD_ISSET(pipefd, &rfds))
+            {
+                FlushPipe(pipefd);
+            }
+            continue;
+        }
+
         FD_ZERO(&rfds);
         FD_ZERO(&wfds);
 
         FD_SET(pipefd, &rfds);
         FD_SET(fd, &wfds);
 
-        /* When we PAUSE LINUX DVB outputs buffers, then audio/video buffers
-         * will continue to be filled. Unfortunately, in such case after resume
+        /* When we PAUSE LINUX DVB outputs buffers, then audio/video buffers 
+         * will continue to be filled. Unfortunately, in such case after resume 
          * select() will never return with fd set - bug in DVB drivers?
          * There are to workarounds possible:
          *   1. write to pipe at resume to return from select() immediately
          *   2. make timeout select(), limit max time spend in the select()
-         *      to for example 0,1s
+         *      to for example 0,1s 
          *   (at now first workaround is used)
          */
         //tv.tv_sec = 0;
         //tv.tv_usec = 100000; // 100ms
-
+        
         retval = select(maxFd + 1, &rfds, &wfds, NULL, NULL); //&tv);
         if (retval < 0)
         {
-            break;
+            if (errno == EINTR)
+            {
+                /* interrupted by a signal: wait again for the rest */
+                continue;
+            }
+            writer_err("select failed: %s\n", strerror(errno));
+            return -1;
         }
-
+        
         //if (retval == 0)
         //{
         //    //printf("RETURN FROM SELECT DUE TO TIMEOUT\n");
         //    continue;
         //}
-
+        
         if(FD_ISSET(pipefd, &rfds))
         {
             FlushPipe(pipefd);
             //printf("RETURN FROM SELECT DUE TO pipefd SET\n");
             continue;
         }
-
+        
         if(FD_ISSET(fd, &wfds))
         {
-            ret = write(fd, buf, size);
+            ret = GuardedWrite(guard, fd, buf, size, &dropped);
+            if (dropped)
+                break;
             if (ret < 0)
             {
-                switch(errno)
+                if (errno == EINTR || errno == EAGAIN)
                 {
-                    case EINTR:
-                    case EAGAIN:
-                        continue;
-                    default:
-                        retval = -3;
-                        break;
+                    continue;
                 }
-                if (retval < 0)
-                {
-                    break;
-                }
-
-                return ret;
+                /* a hard error of the device: the caller drops the rest */
+                writer_err("write failed: %s\n", strerror(errno));
+                return -1;
             }
             else if (ret == 0)
             {
@@ -180,7 +260,7 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
                     FlushPipe(pipefd);
                 continue;
             }
-
+            
             size -= ret;
             buf += ret;
         }
@@ -188,54 +268,84 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
     return 0;
 }
 
-ssize_t write_with_retry(int fd, const void *buf, int size)
+static void WriterWakeInit(void)
 {
-    ssize_t ret;
-    int retval = 0;
-    while(size > 0 && 0 == PlaybackDieNow(0))
+    int i;
+    if (pipe(writerWakePipe) != 0)
     {
-        ret = write(fd, buf, size);
-        if (ret < 0)
-        {
-            switch(errno)
-            {
-                case EINTR:
-                case EAGAIN:
-                    usleep(1000);
-                    continue;
-                default:
-                    retval = -3;
-                    break;
-            }
-            if (retval < 0)
-            {
-                break;
-            }
-        }
-
-        if (ret < 0)
-        {
-            return ret;
-        }
-
-        size -= ret;
-        buf += ret;
-
-        if(size > 0)
-        {
-            if( usleep(1000) )
-            {
-                writer_err("usleep error \n");
-            }
-        }
+        writer_err("wake-up pipe: %s\n", strerror(errno));
+        writerWakePipe[0] = writerWakePipe[1] = -1;
+        return;
     }
-    return 0;
+    for (i = 0; i < 2; i++)
+    {
+        int flags = fcntl(writerWakePipe[i], F_GETFL);
+        if (flags == -1 || fcntl(writerWakePipe[i], F_SETFL, flags | O_NONBLOCK) == -1)
+            writer_err("wake-up pipe: %s\n", strerror(errno));
+        fcntl(writerWakePipe[i], F_SETFD, FD_CLOEXEC);
+    }
+    /* a stop ends the wait at once */
+    PlaybackDieNowRegisterCallback(WriterWakeUp);
+}
+
+/* Ends a wait of writev_with_retry() for room in the device: the output calls
+ * it at a resume, a clear and a stop. Some drivers do not report the device
+ * writable again after a resume (see WriteWithRetry). */
+void WriterWakeUp(void)
+{
+    pthread_once(&writerWakeOnce, WriterWakeInit);
+    /* a full pipe has a wake-up pending already */
+    if (writerWakePipe[1] >= 0 && write(writerWakePipe[1], "x", 1) != 1)
+        writer_printf(20, "wake-up pending\n");
+}
+
+/* The device took nothing: wait in poll() until it has room, WriterWakeUp()
+ * or WRITER_WAIT_MS, instead of retrying every millisecond, which kept a
+ * paused player busy. *writable is set when poll() reported the device
+ * writable: a device that does so and still takes nothing, and the HiSilicon
+ * devices that may never report it, get the 1 ms retry of before. */
+static void WaitForRoom(int fd, int *writable)
+{
+    struct pollfd pfd[2];
+    int n = 1, ret;
+    char tmp;
+
+    if (*writable || STB_HISILICON == GetSTBType())
+    {
+        *writable = 0;
+        usleep(1000);
+        return;
+    }
+    pthread_once(&writerWakeOnce, WriterWakeInit);
+    pfd[0].fd = fd;
+    pfd[0].events = POLLOUT;
+    pfd[0].revents = 0;
+    if (writerWakePipe[0] >= 0)
+    {
+        pfd[1].fd = writerWakePipe[0];
+        pfd[1].events = POLLIN;
+        pfd[1].revents = 0;
+        n = 2;
+    }
+    ret = poll(pfd, n, WRITER_WAIT_MS);
+    if (ret < 0)
+    {
+        if (errno != EINTR)
+            usleep(1000);
+        return;
+    }
+    if (n == 2 && (pfd[1].revents & POLLIN))
+    {
+        while (1 == read(writerWakePipe[0], &tmp, 1));
+    }
+    *writable = ret > 0 && (pfd[0].revents & (POLLOUT | POLLERR | POLLHUP | POLLNVAL)) != 0;
 }
 
 ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic)
 {
     ssize_t len = 0;
     int index = 0;
+    int writable = 0;
     size_t offset = 0;
     if (ic < 0 || (ic && !iov))
     {
@@ -260,9 +370,13 @@ ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic)
         written = writev(fd, batch, count);
         if (written < 0)
         {
-            if (errno == EINTR || errno == EAGAIN)
+            if (errno == EINTR)
             {
-                usleep(1000);
+                continue;
+            }
+            if (errno == EAGAIN)
+            {
+                WaitForRoom(fd, &writable);
                 continue;
             }
             writer_err("writev failed: %s\n", strerror(errno));
@@ -270,9 +384,10 @@ ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic)
         }
         if (!written)
         {
-            usleep(1000);
+            WaitForRoom(fd, &writable);
             continue;
         }
+        writable = 0;
         if (written > SSIZE_MAX - len)
         {
             errno = EOVERFLOW;

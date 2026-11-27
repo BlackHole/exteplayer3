@@ -28,7 +28,7 @@
 
 #include "type.h"
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 typedef struct _BR
 {
   const uint8* buf;
@@ -37,7 +37,7 @@ typedef struct _BR
   int bitoffset;
 } BR;
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 static void init_br(BR* p, const uint8* buf, uint32 size)
 {
   p->buf = buf;
@@ -46,9 +46,13 @@ static void init_br(BR* p, const uint8* buf, uint32 size)
   p->bitoffset = 0;
 }
 
+/* a read behind the end of the packet sees zero bits; br_overrun() tells
+ * whether more bits were taken than the packet has */
 static uint8 get_u8(BR* p)
 {
-  return p->buf[p->read++];
+  uint8 v = p->read < p->size ? p->buf[p->read] : 0;
+  p->read++;
+  return v;
 }
 
 static uint32 get_u24(BR* p)
@@ -75,6 +79,32 @@ static int is_eob(BR* p)
   return p->read >= p->size;
 }
 
+static int br_overrun(BR* p)
+{
+  return p->read > p->size || (p->read == p->size && p->bitoffset > 0);
+}
+
+/* the 32 bits at the read position, zero behind the end of the packet */
+static uint32 show_u32(BR* p)
+{
+  const uint8* pp;
+  uint32 tmp = 0;
+  uint32 i;
+
+  if (p->read < p->size && p->size - p->read >= 4)
+  {
+    pp = p->buf + p->read;
+    return ((uint32)pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8 ) | (pp[3]);
+  }
+  for (i = 0; i < 4; i++)
+  {
+    tmp <<= 8;
+    if (p->read < p->size && i < p->size - p->read)
+      tmp |= p->buf[p->read + i];
+  }
+  return tmp;
+}
+
 static void skip(BR* p, uint32 skip)
 {
   p->read += skip;
@@ -82,11 +112,9 @@ static void skip(BR* p, uint32 skip)
 
 static uint32 show_bits(BR* p, uint32 bits)
 {
-  const uint8* pp;
   uint32 tmp;
-
-  pp = p->buf + p->read;
-  tmp = (pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8 ) | (pp[3]);
+  
+  tmp = show_u32(p);
   tmp <<= p->bitoffset;
   tmp >>= 32 - bits;
 
@@ -95,12 +123,10 @@ static uint32 show_bits(BR* p, uint32 bits)
 
 static int32 show_sbits(BR* p, uint32 bits)
 {
-  const uint8* pp;
   int32 tmp;
-
-  pp = p->buf + p->read;
-  tmp = (pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8 ) | (pp[3]);
-  tmp <<= p->bitoffset;
+  
+  /* shifted as unsigned, the sign comes with the conversion */
+  tmp = (int32)(show_u32(p) << p->bitoffset);
   tmp >>= 32 - bits;
 
   return tmp;
@@ -156,16 +182,16 @@ static int __inline get_vlc(BR* br, const VLCtab* table, int bits, int max_depth
 	index = show_bits(br, bits);
 	code  = table[index].code;
 	n     = table[index].n;
-
+		
 	if (max_depth > 1 && n < 0)
 	{
 		flash_bits(br, bits);
 		nb_bits = -n;
-
+		
 		index = show_bits(br, nb_bits) + code;
 		code = table[index].code;
 		n = table[index].n;
-	}
+	}	
 
 	flash_bits(br, n);
 	return code;

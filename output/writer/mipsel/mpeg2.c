@@ -50,7 +50,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -58,7 +58,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static bool must_send_header = true;
 static uint8_t *private_data = NULL;
@@ -95,9 +95,9 @@ static int writeData(void* _call)
         return 0;
     }
 
-    mpeg2_printf(10, "VideoPts %lld\n", call->Pts);
+    mpeg2_printf(10, "VideoPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         mpeg2_err("parsing NULL Data. ignoring...\n");
         return 0;
@@ -112,14 +112,15 @@ static int writeData(void* _call)
     uint8_t *data = call->data;
     uint32_t data_len = call->len;
 
-    if (!private_data && !call->private_data && data_len > 3 && !memcmp(data, "\x00\x00\x01\xb3", 4))
+    /* A packet with its own sequence header: keep a copy of it, the latest
+     * one, for the first GOP after a seek that comes without one. */
+    if (!call->private_data && data_len > 3 && !memcmp(data, "\x00\x00\x01\xb3", 4))
     {
         bool ok = true;
         uint32_t pos = 4;
         uint32_t sheader_data_len = 0;
         while (pos < data_len && ok)
         {
-            if (pos >= data_len) break;
             pos += 7;
             if (pos >=data_len) break;
             sheader_data_len = 12;
@@ -201,6 +202,13 @@ static int writeData(void* _call)
 
         while (data_len >= 4 && pos <= data_len - 4)
         {
+            /* the sequence header of the packet in front of the GOP applies,
+             * not the one kept from before the seek */
+            if (!memcmp(&data[pos], "\x00\x00\x01\xb3", 4))
+            {
+                must_send_header = false;
+                break;
+            }
             if (memcmp(&data[pos], "\x00\x00\x01\xb8", 4)) /* find group start code */
             {
                 pos++;
@@ -234,7 +242,7 @@ static int writeData(void* _call)
     iov[1].iov_len = data_len;
 
     PesHeader[6] = 0x81;
-
+    
     UpdatePesHeaderPayloadSize(PesHeader, data_len + iov[0].iov_len - 6);
     if (iov[0].iov_len != WriteExt(call->WriteV, call->fd, iov[0].iov_base, iov[0].iov_len)) return -1;
     if (iov[1].iov_len != WriteExt(call->WriteV, call->fd, iov[1].iov_base, iov[1].iov_len)) return -1;

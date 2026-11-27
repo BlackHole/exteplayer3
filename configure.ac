@@ -1,5 +1,5 @@
 AC_PREREQ([2.69])
-AC_INIT([exteplayer3], [186], [oe-alliance])
+AC_INIT([exteplayer3], [187], [oe-alliance])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIR([m4])
 
@@ -45,8 +45,8 @@ AC_SUBST([DL_LIBS])
 
 # ---------------------------------------------------------------------------
 # Optional: DreamNextGen build (AMlogic dreamone/dreamtwo)
-#   - ALSA audio output module (output/dream_audio.c)
-#   - amstream_vbuf video output module (output/dream_video.c)
+#   - amstream_vbuf video output module (output/dream_video.c), the audio
+#     goes through the kernel's dreamaudio device (no ALSA)
 # ---------------------------------------------------------------------------
 AC_ARG_ENABLE([dreamnextgen],
     [AS_HELP_STRING([--enable-dreamnextgen],
@@ -54,7 +54,6 @@ AC_ARG_ENABLE([dreamnextgen],
     [enable_dreamnextgen=$enableval], [enable_dreamnextgen=no])
 
 if test "x$enable_dreamnextgen" = "xyes"; then
-    PKG_CHECK_MODULES([ALSA], [alsa])
     AC_DEFINE([HAVE_DREAMNEXTGEN], [1], [Build dreamone/dreamtwo backend])
 fi
 AM_CONDITIONAL([HAVE_DREAMNEXTGEN], [test "x$enable_dreamnextgen" = "xyes"])
@@ -75,8 +74,8 @@ fi
 AC_DEFINE([_FILE_OFFSET_BITS],   [64], [Largefile])
 AC_DEFINE([_LARGEFILE64_SOURCE], [1],  [Largefile64])
 AC_DEFINE([_LARGEFILE_SOURCE],   [1],  [Largefile])
-AC_DEFINE([AUDIO_GET_PTS], [VIDEO_GET_PTS],
-          [Older kernel headers lack AUDIO_GET_PTS — alias the video ioctl])
+AC_DEFINE([AUDIO_GET_PTS], [_IOR('o', 19, __u64)],
+          [linux/dvb/audio.h has AUDIO_GET_PTS up to Linux 4.17 only, the same value as there])
 
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_FILES([Makefile])

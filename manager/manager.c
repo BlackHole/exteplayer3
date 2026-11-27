@@ -26,7 +26,7 @@
 #include "manager.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -34,7 +34,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 extern Manager_t AudioManager;
@@ -87,14 +87,9 @@ void copyTrack(Track_t *to, Track_t *from)
             to->language = strdup("Unknown");
         }
 
-        if (from->Description != NULL)
+        if (from->Title != NULL)
         {
-            to->Description = strdup(from->Description);
-        }
-
-        if (from->OutputEncoding != NULL)
-        {
-            to->OutputEncoding = strdup(from->OutputEncoding);
+            to->Title = strdup(from->Title);
         }
     }
 }
@@ -121,16 +116,10 @@ void freeTrack(Track_t *track)
             track->language = NULL;
         }
 
-        if (track->Description != NULL)
+        if (track->Title != NULL)
         {
-            free(track->Description);
-            track->Description = NULL;
-        }
-
-        if (track->OutputEncoding != NULL)
-        {
-            free(track->OutputEncoding);
-            track->OutputEncoding = NULL;
+            free(track->Title);
+            track->Title = NULL;
         }
 
         if (track->aacbuf != NULL)
@@ -145,6 +134,8 @@ void freeTrack(Track_t *track)
 void replaceTrack(Track_t *to, Track_t *from)
 {
     Track_t replacement;
+    if (NULL == to || NULL == from)
+        return;
     copyTrack(&replacement, from);
     if (to->aacbuf == replacement.aacbuf)
         to->aacbuf = NULL;

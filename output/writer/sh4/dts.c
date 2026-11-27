@@ -48,7 +48,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define PES_AUDIO_PRIVATE_HEADER_SIZE   16                                // consider maximum private header size.
 #define PES_AUDIO_HEADER_SIZE           (32 + PES_AUDIO_PRIVATE_HEADER_SIZE)
@@ -60,7 +60,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -89,9 +89,9 @@ static int32_t writeData(void* _call)
         return 0;
     }
 
-    dts_printf(10, "AudioPts %lld\n", call->Pts);
+    dts_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         dts_err("parsing NULL Data. ignoring...\n");
         return 0;
@@ -110,7 +110,7 @@ static int32_t writeData(void* _call)
     int32_t pos = 0;
     while ((pos + 4) <= Size)
     {
-        // check for DTS-HD
+        // check for DTS-HD 
         if (!strcmp((char*)(Data + pos), "\x64\x58\x20\x25"))
         {
             Size = pos;
@@ -119,7 +119,7 @@ static int32_t writeData(void* _call)
         ++pos;
     }
 #endif
-
+    
 // #define DO_BYTESWAP
 #ifdef DO_BYTESWAP
     /* 16-bit byte swap all data before injecting it */

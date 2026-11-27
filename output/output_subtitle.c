@@ -41,7 +41,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* Error Constants */
@@ -66,11 +66,14 @@ Number, Style, Name,, MarginL, MarginR, MarginV, Effect,, Text
 
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static pthread_mutex_t mutex;
 static int isSubtitleOpened = 0;
 static SubWriter_t *g_subWriter;
+/* --forced-only / so1: only forced cues are sent; set by the command
+ * thread, read by the play thread */
+static int forcedOnly = 0;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -88,7 +91,7 @@ static void getMutex(int line)
     subtitle_printf(100, "%d received mutex\n", line);
 }
 
-static void releaseMutex(int line)
+static void releaseMutex(int line) 
 {
     pthread_mutex_unlock(&mutex);
 
@@ -98,6 +101,15 @@ static void releaseMutex(int line)
 /* ***************************** */
 /* Functions                     */
 /* ***************************** */
+void subtitle_forced_only_set(int on)
+{
+    __atomic_store_n(&forcedOnly, on ? 1 : 0, __ATOMIC_RELAXED);
+}
+
+int subtitle_forced_only_get(void)
+{
+    return __atomic_load_n(&forcedOnly, __ATOMIC_RELAXED);
+}
 
 static char * ass_get_text(char *str)
 {
@@ -135,18 +147,31 @@ static char *mov_get_text(const char *str, int len)
     const char *p_str = str;
     const char *end = str + len;
 
-    while (p_str < end && !((unsigned char)*p_str & 0x80) && *p_str != ' ')
+    /* a tx3g sample starts with the 16 bit length of its text, style boxes
+     * can follow the text */
+    if (len >= 2 && (((unsigned char)str[0] << 8) | (unsigned char)str[1]) <= len - 2)
     {
-        p_str++;
+        p_str = str + 2;
+        len = ((unsigned char)str[0] << 8) | (unsigned char)str[1];
+    }
+    else
+    {
+        while (p_str < end && !((unsigned char)*p_str & 0x80) && *p_str != ' ')
+        {
+            p_str++;
+        }
+
+        /* what is left of the packet after the skipped bytes */
+        len = (int)(end - p_str);
     }
 
-    if (p_str >= end)
+    if (len <= 0)
     {
         return strdup("");
     }
 
-    /* an escaped character takes two bytes */
-    char *result = malloc(2 * (size_t)len + 1);
+    /* an escaped character takes up to six bytes (\u00XX) */
+    char *result = malloc(6 * (size_t)len + 1);
 
     if (!result)
     {
@@ -160,7 +185,9 @@ static char *mov_get_text(const char *str, int len)
     {
         if (p_str[i] == '\\' && i + 1 < len && p_str[i + 1] == 'N')
         {
-            *out_ptr++ = '\n';
+            /* a line break, escaped for the JSON string like a line feed */
+            *out_ptr++ = '\\';
+            *out_ptr++ = 'n';
             i += 2;
         }
         else if ((unsigned char)p_str[i] < 0x80 || p_str[i] == ' ')
@@ -174,7 +201,16 @@ static char *mov_get_text(const char *str, int len)
                 case '\n': *out_ptr++ = '\\'; *out_ptr++ = 'n'; break;
                 case '\r': *out_ptr++ = '\\'; *out_ptr++ = 'r'; break;
                 case '\t': *out_ptr++ = '\\'; *out_ptr++ = 't'; break;
-                default:   *out_ptr++ = p_str[i];
+                default:
+                    if ((unsigned char)p_str[i] < 0x20)
+                    {
+                        /* any other control character is not allowed raw in a JSON string */
+                        out_ptr += snprintf(out_ptr, 6 * (size_t)len + 1 - (size_t)(out_ptr - result), "\\u%04x", (unsigned char)p_str[i]);
+                    }
+                    else
+                    {
+                        *out_ptr++ = p_str[i];
+                    }
             }
             i++;
         }
@@ -244,10 +280,10 @@ static char *mov_get_text(const char *str, int len)
 
 static char * json_string_escape(char *str)
 {
-    /* an escaped character takes two bytes */
+    /* an escaped character takes up to six bytes (\u00XX) */
     static char *tmp = NULL;
     static size_t tmpSize = 0;
-    size_t need = 2 * strlen(str) + 1;
+    size_t need = 6 * strlen(str) + 1;
     if (need > tmpSize)
     {
         char *n = realloc(tmp, need);
@@ -262,7 +298,7 @@ static char * json_string_escape(char *str)
     char *ptr2 = str;
     while (*ptr2 != '\0')
     {
-        switch (*ptr2)
+        switch (*ptr2) 
         {
         case '"':
             *ptr1++ = '\\';
@@ -284,19 +320,27 @@ static char * json_string_escape(char *str)
             *ptr1++ = '\\';
             *ptr1++ = 'n';
         break;
-        case '\r':
+        case '\r': 
             *ptr1++ = '\\';
             *ptr1++ = 'r';
         break;
-        case '\t':
+        case '\t': 
             *ptr1++ = '\\';
             *ptr1++ = 't';
         break;
         default:
-            *ptr1++ = *ptr2;
+            if ((unsigned char)*ptr2 < 0x20)
+            {
+                /* any other control character is not allowed raw in a JSON string */
+                ptr1 += snprintf(ptr1, tmpSize - (size_t)(ptr1 - tmp), "\\u%04x", (unsigned char)*ptr2);
+            }
+            else
+            {
+                *ptr1++ = *ptr2;
+            }
             break;
         }
-
+        
         ++ptr2;
     }
     *ptr1 = '\0';
@@ -382,7 +426,11 @@ static char * ass_line_breaks(char *str)
     return str;
 }
 
-static int Flush()
+/* Write() and the close and reset of the writer run under the mutex: the
+ * play thread writes without the container lock, the command thread flushes
+ * (seek, subtitle switch), and the write of a packet of another track closes
+ * the graphic decoder that the flush would use. */
+static int FlushLocked()
 {
     if (g_subWriter)
         g_subWriter->reset();
@@ -391,13 +439,33 @@ static int Flush()
     return cERR_SUBTITLE_NO_ERROR;
 }
 
+static int Flush()
+{
+    int ret;
+    getMutex(__LINE__);
+    ret = FlushLocked();
+    releaseMutex(__LINE__);
+    return ret;
+}
+
+static int WriteLocked(void *_context, void *data);
+
 static int Write(void *_context, void *data)
+{
+    int ret;
+    getMutex(__LINE__);
+    ret = WriteLocked(_context, data);
+    releaseMutex(__LINE__);
+    return ret;
+}
+
+static int WriteLocked(void *_context, void *data)
 {
     Context_t  *context = (Context_t *)_context;
     char *Encoding      = NULL;
     SubtitleOut_t *out  = NULL;
     int32_t curtrackid  = -1;
-
+    
     subtitle_printf(10, "\n");
 
     if (data == NULL)
@@ -417,7 +485,9 @@ static int Write(void *_context, void *data)
             g_subWriter = NULL;
         }
 
-        Flush();
+        FlushLocked();
+        /* the packet belongs to the track selected before, not to this encoding */
+        return cERR_SUBTITLE_NO_ERROR;
     }
     context->manager->subtitle->Command(context, MANAGER_GETENCODING, &Encoding);
 
@@ -427,7 +497,7 @@ static int Write(void *_context, void *data)
        return cERR_SUBTITLE_ERROR;
     }
 
-    subtitle_printf(20, "Encoding:%s Text:%s Len:%d\n", Encoding, (const char*) out->data, out->len);
+    subtitle_printf(20, "Encoding:%s Text:%s Len:%u\n", Encoding, (const char*) out->data, out->len);
 
     SubtitleCodecId_t subCodecId = SUBTITLE_CODEC_ID_UNKNOWN;
     if(!strncmp("S_TEXT/SUBRIP", Encoding, 13))
@@ -444,9 +514,49 @@ static int Write(void *_context, void *data)
         subCodecId = SUBTITLE_CODEC_ID_XSUB;
     else if (!strncmp("S_TEXT/MOV", Encoding, 10))
         subCodecId = SUBTITLE_CODEC_ID_MOV_TEXT;
+    else if (!strcmp("S_TEXT/EIA608", Encoding))
+        subCodecId = SUBTITLE_CODEC_ID_EIA608;
+
+    /* Forced only: PGS marks each forced picture (forced_on_flag), the
+     * graphic writer sends only those, on a forced track too. The other
+     * formats have no such mark: every cue of a forced track (f 1 in s_l)
+     * counts as forced, no cue of another track. Bitmap packets still
+     * reach the decoder, which keeps state from one display set to the
+     * next. */
+    int pictureFilter = 0;
+    if (__atomic_load_n(&forcedOnly, __ATOMIC_RELAXED))
+    {
+        int unforcedTrack = 1;
+
+        if (subCodecId != SUBTITLE_CODEC_ID_PGS)
+        {
+            TrackDescription_t *track = NULL;
+            context->manager->subtitle->Command(context, MANAGER_GET_TRACK_DESC, &track);
+            unforcedTrack = !(track && track->is_forced);
+            if (track)
+            {
+                free(track->Name);
+                free(track->Encoding);
+                free(track->Title);
+                free(track);
+            }
+        }
+        pictureFilter = unforcedTrack;
+        if (unforcedTrack && subCodecId != SUBTITLE_CODEC_ID_PGS && subCodecId != SUBTITLE_CODEC_ID_DVB &&
+            subCodecId != SUBTITLE_CODEC_ID_XSUB)
+        {
+            subtitle_printf(20, "forced only: cue of track %d dropped\n", (int)out->trackId);
+            free(Encoding);
+            return cERR_SUBTITLE_NO_ERROR;
+        }
+    }
 
     switch (subCodecId)
     {
+        case SUBTITLE_CODEC_ID_EIA608:
+            /* plain text from the closed caption decoder of the container */
+            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_string_escape((char *)out->data));
+        break;
         case SUBTITLE_CODEC_ID_SUBRIP:
         case SUBTITLE_CODEC_ID_WEBVTT:
             E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_string_escape( remove_ass_formating((char *)out->data) ));
@@ -485,6 +595,7 @@ static int Write(void *_context, void *data)
 
             subPacket.width = out->width;
             subPacket.height = out->height;
+            subPacket.forcedOnly = pictureFilter;
             g_subWriter->write(&subPacket);
         }
         break;
@@ -499,7 +610,7 @@ static int Write(void *_context, void *data)
     return cERR_SUBTITLE_NO_ERROR;
 }
 
-static int32_t subtitle_Open(Context_t *context __attribute__((unused)))
+static int32_t subtitle_Open(Context_t *context __attribute__((unused))) 
 {
     uint32_t i = 0 ;
 
@@ -544,14 +655,14 @@ static int32_t subtitle_Close(Context_t *context __attribute__((unused)))
     return cERR_SUBTITLE_NO_ERROR;
 }
 
-static int Command(void  *_context, OutputCmd_t command, void *argument)
+static int Command(void  *_context, OutputCmd_t command, void *argument) 
 {
     Context_t  *context = (Context_t*) _context;
     int ret = cERR_SUBTITLE_NO_ERROR;
 
     subtitle_printf(50, "%d\n", command);
 
-    switch(command)
+    switch(command) 
     {
     case OUTPUT_OPEN:
     {
@@ -563,11 +674,11 @@ static int Command(void  *_context, OutputCmd_t command, void *argument)
         ret = subtitle_Close(context);
         break;
     }
-    case OUTPUT_PLAY:
+    case OUTPUT_PLAY: 
     {
         break;
     }
-    case OUTPUT_STOP:
+    case OUTPUT_STOP: 
     {
         break;
     }
@@ -586,7 +697,7 @@ static int Command(void  *_context, OutputCmd_t command, void *argument)
         ret = Flush();
         break;
     }
-    case OUTPUT_PAUSE:
+    case OUTPUT_PAUSE: 
     {
         subtitle_err("Subtitle Pause not implemented\n");
         ret = cERR_SUBTITLE_ERROR;

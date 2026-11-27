@@ -28,7 +28,7 @@
 
 #include "type.h"
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 typedef struct _BW
 {
 	uint8* buf;
@@ -36,15 +36,18 @@ typedef struct _BW
 	uint32 pos;
 	uint32 bitoffset;
 	uint32 tmp;
+	/* set when the bits did not fit into buf */
+	int overflow;
 
 } BW;
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 static void __inline clear_bw(BW* p)
 {
 	p->pos = 0;
 	p->bitoffset = 0;
 	p->tmp = 0;
+	p->overflow = 0;
 }
 
 static void __inline init_bw(BW* p, uint8* buf, uint32 size)
@@ -60,11 +63,18 @@ static void __inline forword_bits(BW* p, uint32 bits)
 
 	if (p->bitoffset >= 32)
 	{
-		p->buf[p->pos++] = (p->tmp >> 24) & 0xff;
-		p->buf[p->pos++] = (p->tmp >> 16) & 0xff;
-		p->buf[p->pos++] = (p->tmp >> 8 ) & 0xff;
-		p->buf[p->pos++] = (p->tmp >> 0 ) & 0xff;
-
+		if (p->size - p->pos < 4)
+		{
+			p->overflow = 1;
+		}
+		else
+		{
+			p->buf[p->pos++] = (p->tmp >> 24) & 0xff;
+			p->buf[p->pos++] = (p->tmp >> 16) & 0xff;
+			p->buf[p->pos++] = (p->tmp >> 8 ) & 0xff;
+			p->buf[p->pos++] = (p->tmp >> 0 ) & 0xff;
+		}
+		
 		p->tmp = 0;
 		p->bitoffset -= 32;
 	}
@@ -76,7 +86,8 @@ static void __inline put_bits(BW* p, uint32 bits, uint32 value)
 
 	if (shift <= 32)
 	{
-		p->tmp |= value << shift;
+		if (shift < 32) /* 32: no bits to put */
+			p->tmp |= value << shift;
 		forword_bits(p, bits);
 	}
 	else
@@ -102,6 +113,12 @@ static void __inline pad_to_boundary(BW* p)
 static void __inline flash_bw(BW* p)
 {
 	pad_to_boundary(p);
+	
+	if (p->size - p->pos < p->bitoffset / 8)
+	{
+		p->overflow = 1;
+		p->bitoffset = 0;
+	}
 
 	switch (p->bitoffset)
 	{
@@ -141,7 +158,7 @@ static void __inline put_vlcdec(BW* bw, VLCDEC* vlcdec)
 static void __inline m4v_stuffing(BW* p)
 {
 	int length;
-
+	
 	put_bits(p, 1, 0);
 	length = (- p->bitoffset) & 7;
 	if (length) put_bits(p, length, (1 << length) - 1);

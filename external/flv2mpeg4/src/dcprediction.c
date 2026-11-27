@@ -47,7 +47,7 @@ static int __inline get_pred(int* dc_cur, int stride, int scale)
 	int B = dc_cur[-1 - stride];
 	int C = dc_cur[-stride];
 	int pred;
-
+	
 	if (abs(A - B) < abs(B - C))
 	{
 		pred = C;
@@ -56,7 +56,7 @@ static int __inline get_pred(int* dc_cur, int stride, int scale)
 	{
 		pred = A;
 	}
-
+	
 	return (pred + (scale >> 1)) / scale;
 }
 
@@ -98,7 +98,7 @@ static int __inline get_scale(M4V_DCPRED* pred, int n)
 	}
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 void dcpred_set_qscale(M4V_DCPRED* pred, int qscale)
 {
 	if (qscale < 0) qscale = 0;
@@ -123,7 +123,7 @@ int dcpred_for_enc(M4V_DCPRED* p, int n, int level)
 	int pred = get_pred(dc_cur, p->stride[n], scale);
 
 	set_dc_to_dc_cur(dc_cur, level, scale);
-	return level - pred;
+	return level - pred; 
 }
 
 int dcpred_for_dec(M4V_DCPRED* p, int n, int level)
@@ -134,10 +134,10 @@ int dcpred_for_dec(M4V_DCPRED* p, int n, int level)
 
 	level += pred;
 	set_dc_to_dc_cur(dc_cur, level, scale);
-	return level;
+	return level; 
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 static void init_plane(M4V_DCPRED* pred, int n)
 {
 	int x, len = pred->stride[n]*pred->height[n];
@@ -175,7 +175,7 @@ void alloc_dcpred(M4V_DCPRED* pred, int mb_width, int mb_height)
 	pred->height[0] = pred->height[1] = pred->height[2] = pred->height[3] = h2;
 	pred->stride[4] = pred->stride[5] = w;
 	pred->height[4] = pred->height[5] = h;
-
+		
 	pred->block_offset[0] = 0;
 	pred->block_offset[1] = 1;
 	pred->block_offset[2] = w2;

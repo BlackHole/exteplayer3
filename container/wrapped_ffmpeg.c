@@ -1,6 +1,6 @@
-/*
- * Wrapper functions for FFMPEG API which
- * allows to compile and use exteplayer3
+/* 
+ * Wrapper functions for FFMPEG API which 
+ * allows to compile and use exteplayer3 
  * with old ffmpeg libs
  */
 static void wrapped_frame_free(void *param)
@@ -44,7 +44,7 @@ static void wrapped_set_max_analyze_duration(void *param, int val)
 #if (LIBAVFORMAT_VERSION_MAJOR > 55) && (LIBAVFORMAT_VERSION_MAJOR < 56)
     ((AVFormatContext *)param)->max_analyze_duration2 = val;
 #else
-    ((AVFormatContext *)param)->max_analyze_duration = 1;
+    ((AVFormatContext *)param)->max_analyze_duration = val;
 #endif
 }
 
@@ -61,7 +61,7 @@ static int64_t get_packet_duration(AVPacket *packet)
 static AVCodecParameters *get_codecpar(AVStream *stream)
 {
     return stream->codecpar;
-}
+} 
 #else
 static AVCodecContext *get_codecpar(AVStream *stream)
 {
@@ -74,7 +74,7 @@ static AVRational get_frame_rate(AVStream *stream)
     AVRational rateRational = stream->avg_frame_rate;
     if (0 == rateRational.den)
     {
-        rateRational = stream->r_frame_rate;
+        rateRational = stream->r_frame_rate; 
     }
     return rateRational;
 }
@@ -108,6 +108,7 @@ void free_all_stored_avcodec_context()
     while (g_codecCtxStoreListHead != NULL)
     {
         CodecCtxStoreItem_t *ptr = g_codecCtxStoreListHead->next;
+        avcodec_free_context(&g_codecCtxStoreListHead->avCodecCtx);
         free(g_codecCtxStoreListHead);
         g_codecCtxStoreListHead = ptr;
     }
@@ -120,14 +121,17 @@ int store_avcodec_context(AVCodecContext *avCodecCtx, uint32_t cAVIdx, int id)
     {
         return -1;
     }
-
+    
     memset(ptr, 0x00, sizeof(CodecCtxStoreItem_t));
+    ptr->cAVIdx = cAVIdx;
+    ptr->id = id;
+    ptr->avCodecCtx = avCodecCtx;
     ptr->next = g_codecCtxStoreListHead;
     g_codecCtxStoreListHead = ptr;
-
+    
     return 0;
 }
-#else
+#else 
 void free_all_stored_avcodec_context()
 {
 }
@@ -136,11 +140,12 @@ void free_all_stored_avcodec_context()
 static AVCodecContext *wrapped_avcodec_get_context(uint32_t cAVIdx, AVStream *stream)
 {
 #if (LIBAVFORMAT_VERSION_MAJOR > 57) || ((LIBAVFORMAT_VERSION_MAJOR == 57) && (LIBAVFORMAT_VERSION_MINOR > 32))
-    AVCodecContext *avCodecCtx = restore_avcodec_context(cAVIdx, stream->id);
+    /* AVStream.id need not be unique (FLV: 0 for every stream), the index is */
+    AVCodecContext *avCodecCtx = restore_avcodec_context(cAVIdx, stream->index);
     if (!avCodecCtx)
     {
         avCodecCtx = avcodec_alloc_context3(NULL);
-        if (!avCodecCtx)
+        if (!avCodecCtx) 
         {
             ffmpeg_err("context3 alloc for stream %d failed\n", (int)stream->id);
             return NULL;
@@ -157,10 +162,15 @@ static AVCodecContext *wrapped_avcodec_get_context(uint32_t cAVIdx, AVStream *st
 #else
         avCodecCtx->pkt_timebase = stream->time_base;
 #endif
-        store_avcodec_context(avCodecCtx, cAVIdx, stream->id);
-
-        return avCodecCtx;
+        /* only a stored context is found again, flushed and freed */
+        if (store_avcodec_context(avCodecCtx, cAVIdx, stream->index) < 0)
+        {
+            ffmpeg_err("storing the context for stream %d failed\n", (int)stream->id);
+            avcodec_free_context(&avCodecCtx);
+            return NULL;
+        }
     }
+    return avCodecCtx;
 #else
     return stream->codec;
 #endif

@@ -53,15 +53,20 @@
 #include "pcm.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
 /* Types                         */
 /* ***************************** */
 
+/* The timestamp of a block is counted on from the first packet; when a
+ * packet says otherwise by more than this (40 ms, 90 kHz), the count is
+ * taken from the packet again. */
+#define PCM_REANCHOR_TICKS 3600
+
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static uint8_t initialHeader = 1;
 static uint8_t codec_data[18];
@@ -100,9 +105,9 @@ static int32_t writeData(void *_call)
         return 0;
     }
 
-    pcm_printf(10, "AudioPts %lld\n", call->Pts);
+    pcm_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if (!call->data || (call->len <= 0))
+    if (!call->data || (call->len == 0))
     {
         pcm_err("parsing NULL Data. ignoring...\n");
         return 0;
@@ -118,12 +123,8 @@ static int32_t writeData(void *_call)
     pcmPrivateData_t *pcmPrivateData  = (pcmPrivateData_t*)call->private_data;
     uint8_t *buffer = call->data;
     uint32_t   size = call->len;
-
-    /* after a seek the timestamp of before it is stale; a jump of more than
-     * 500 ms renews it as well, should bResampling not be set */
-    uint8_t ptsJumped = fixed_buffertimestamp > 0 &&
-        llabs((int64_t)call->Pts - (int64_t)fixed_buffertimestamp) > 45000;
-    if( pcmPrivateData->bResampling || NULL == fixed_buffer || initialHeader || ptsJumped )
+    
+    if( pcmPrivateData->bResampling || NULL == fixed_buffer )
     {
         int32_t width = 0;
         int32_t depth = 0;
@@ -133,8 +134,7 @@ static int32_t writeData(void *_call)
         int32_t byterate = 0;
 
         uint32_t codecID   = (uint32_t)pcmPrivateData->codec_id;
-
-        uint8_t dataPrecision = 0;
+        
         uint8_t LE = 0;
         switch (codecID)
         {
@@ -145,6 +145,8 @@ static int32_t writeData(void *_call)
             case AV_CODEC_ID_PCM_S16LE:
             case AV_CODEC_ID_PCM_U16LE:
                 LE = 1;
+                /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S16BE:
             case AV_CODEC_ID_PCM_U16BE:
                 width = depth = 16;
@@ -152,6 +154,8 @@ static int32_t writeData(void *_call)
             case AV_CODEC_ID_PCM_S24LE:
             case AV_CODEC_ID_PCM_U24LE:
                 LE = 1;
+                /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S24BE:
             case AV_CODEC_ID_PCM_U24BE:
                 width = depth = 24;
@@ -159,6 +163,8 @@ static int32_t writeData(void *_call)
             case AV_CODEC_ID_PCM_S32LE:
             case AV_CODEC_ID_PCM_U32LE:
                 LE = 1;
+                /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S32BE:
             case AV_CODEC_ID_PCM_U32BE:
                 width = depth = 32;
@@ -166,10 +172,10 @@ static int32_t writeData(void *_call)
             default:
                 break;
         }
-
+        
         uint8_t *data = codec_data;
         uint16_t format = LE ? 0x0001 : 0x0100;
-
+        
         byterate = channels * rate * width / 8;
         block_align = channels * width / 8;
         memset(data, 0, sizeof(codec_data));
@@ -195,9 +201,16 @@ static int32_t writeData(void *_call)
         /* word size */
         *(data++) = depth & 0xff;
         *(data++) = (depth >> 8) & 0xff;
-
+        
         uint32_t nfixed_buffersize = rate * 30 / 1000;
         nfixed_buffersize *= channels * depth / 8;
+        /* no channels, no rate or a format without a width: no block size
+         * and nothing to divide the duration by */
+        if (byterate <= 0 || nfixed_buffersize == 0)
+        {
+            pcm_err("no byte rate (channels %d, rate %d, width %d). ignoring...\n", channels, rate, width);
+            return 0;
+        }
         fixed_buffertimestamp = call->Pts;
         fixed_bufferduration = 90000ULL * nfixed_buffersize /  byterate;
         
@@ -209,14 +222,44 @@ static int32_t writeData(void *_call)
                 free(fixed_buffer);
             }
             fixed_buffer = malloc(fixed_buffersize);
+            if (NULL == fixed_buffer)
+            {
+                /* again with the next packet */
+                pcm_err("allocating the block buffer failed\n");
+                fixed_buffersize = 0;
+                return 0;
+            }
         }
         fixed_bufferfilled = 0;
-        initialHeader = 0;
         pcm_printf(40, "PCM fixed_buffersize [%u] [%s]\n", fixed_buffersize, LE ? "LE":"BE");
     }
 
-    while (size > 0)
+    /* The blocks are timed by counting 30 ms per block from the first
+     * packet. Audio lost on the way (a gap in decoded audio, a stream that
+     * resumes later) or a timestamp jump of the source without a new header
+     * would leave every following block that far off for the rest of the
+     * playback. So the packet's PTS is checked: the samples already in the
+     * block began their duration before it, and a block start more than
+     * 40 ms away from the counted one is taken over. Normal streams stay
+     * within that and keep the count. */
+    if (call->Pts != INVALID_PTS_VALUE && fixed_buffersize > 0 && fixed_bufferduration > 0)
     {
+        uint64_t filled = (uint64_t)fixed_bufferfilled * fixed_bufferduration / fixed_buffersize;
+        uint64_t expected = call->Pts >= filled ? call->Pts - filled : call->Pts;
+        int64_t diff = (int64_t)(expected - fixed_buffertimestamp);
+
+        if (fixed_buffertimestamp == INVALID_PTS_VALUE ||
+            diff > PCM_REANCHOR_TICKS || diff < -PCM_REANCHOR_TICKS)
+        {
+            pcm_printf(10, "block timestamp %llu -> %llu (packet PTS %llu)\n",
+                       (unsigned long long)fixed_buffertimestamp,
+                       (unsigned long long)expected, (unsigned long long)call->Pts);
+            fixed_buffertimestamp = expected;
+        }
+    }
+
+    while (size > 0)
+    {        
         uint32_t cpSize = (fixed_buffersize - fixed_bufferfilled);
         if(cpSize > size)
         {
@@ -224,12 +267,12 @@ static int32_t writeData(void *_call)
             fixed_bufferfilled += size;
             return size;
         }
-
+        
         memcpy(fixed_buffer + fixed_bufferfilled, buffer, cpSize);
         fixed_bufferfilled = 0;
         buffer += cpSize;
         size -= cpSize;
-
+        
         uint32_t addHeaderSize = 0;
         if( STB_DREAMBOX == GetSTBType() )
         {
@@ -248,7 +291,7 @@ static int32_t writeData(void *_call)
         PesHeader[headerSize++] = (fixed_buffersize >> 16) & 0xff;
         PesHeader[headerSize++] = (fixed_buffersize >> 8)  & 0xff;
         PesHeader[headerSize++] = fixed_buffersize & 0xff;
-
+        
         memcpy(PesHeader + headerSize, codec_data, sizeof(codec_data));
         headerSize += sizeof(codec_data);
 
@@ -262,7 +305,7 @@ static int32_t writeData(void *_call)
         call->WriteV(call->fd, iov, 2);
         fixed_buffertimestamp += fixed_bufferduration;
     }
-
+    
     return size;
 }
 
@@ -270,7 +313,7 @@ static int32_t writeData(void *_call)
 /* Writer  Definition            */
 /* ***************************** */
 
-static WriterCaps_t caps_pcm =
+static WriterCaps_t caps_pcm = 
 {
     "pcm",
     eAudio,
@@ -280,7 +323,7 @@ static WriterCaps_t caps_pcm =
     -1
 };
 
-struct Writer_s WriterAudioPCM =
+struct Writer_s WriterAudioPCM = 
 {
     &reset,
     &writeData,
@@ -288,7 +331,7 @@ struct Writer_s WriterAudioPCM =
     &caps_pcm
 };
 
-static WriterCaps_t caps_ipcm =
+static WriterCaps_t caps_ipcm = 
 {
     "ipcm",
     eAudio,
@@ -298,7 +341,7 @@ static WriterCaps_t caps_ipcm =
     -1
 };
 
-struct Writer_s WriterAudioIPCM =
+struct Writer_s WriterAudioIPCM = 
 {
     &reset,
     &writeData, /* writeDataIPCM */

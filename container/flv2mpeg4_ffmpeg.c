@@ -11,7 +11,7 @@ typedef struct
     flv2mpeg4_CTX *ctx;
     uint8_t *extradata;
     int extradatasize;
-
+    
     Context_t *out_ctx;
     /* Only scalar fields are used while an output callback releases the lock. */
     Track_t    track;
@@ -25,7 +25,7 @@ static int flv2mpeg4_context_write_packet_cb(void *usr_data, int keyframe, int p
     {
         return -1;
     }
-
+    
     AudioVideoOut_t avOut;
     avOut.data       = (char *)buf;
     avOut.len        = size;
@@ -43,7 +43,7 @@ static int flv2mpeg4_context_write_packet_cb(void *usr_data, int keyframe, int p
     {
         ffmpeg_err("writing data to video device failed\n");
     }
-
+    
     return 0;
 }
 
@@ -54,12 +54,18 @@ static int flv2mpeg4_context_write_extradata_cb(void *usr_data, int width, int h
     {
         return -1;
     }
-
+    
     free(ctx->extradata);
     ctx->extradata = malloc(extradatasize);
+    if (!ctx->extradata)
+    {
+        ffmpeg_err("cannot allocate the MPEG-4 codec data\n");
+        ctx->extradatasize = 0;
+        return -1;
+    }
     memcpy(ctx->extradata, extradata, extradatasize);
     ctx->extradatasize = extradatasize;
-
+    
     return 0;
 }
 
@@ -67,7 +73,7 @@ static void flv2mpeg4_context_reset(Flv2Mpeg4Context *context)
 {
     if (context == NULL || context->ctx == NULL)
         return;
-
+    
     flv2mpeg4_set_frame(context->ctx, 0, 0);
 }
 
@@ -78,7 +84,7 @@ static int flv2mpeg4_write_packet(Context_t *out_ctx, Flv2Mpeg4Context *mpeg4p2_
         mpeg4p2_ctx->ctx = flv2mpeg4_init_ctx(mpeg4p2_ctx, track->width, track->height, flv2mpeg4_context_write_packet_cb, flv2mpeg4_context_write_extradata_cb);
         flv2mpeg4_prepare_extra_data(mpeg4p2_ctx->ctx);
     }
-
+    
     *pts_current = track->pts = calcPts(cAVIdx, track->stream, pkt->pts);
     if (*pts_current == INVALID_PTS_VALUE)
     {
@@ -90,11 +96,11 @@ static int flv2mpeg4_write_packet(Context_t *out_ctx, Flv2Mpeg4Context *mpeg4p2_
         *pts_latest = *pts_current;
     }
     track->dts = calcDts(cAVIdx, track->stream, pkt->dts);
-
-    mpeg4p2_ctx->out_ctx = out_ctx;
+    
+    mpeg4p2_ctx->out_ctx = out_ctx;    
     mpeg4p2_ctx->track = *track;
 
     uint32_t time_ms = (uint32_t)(track->pts / 90);
-
+    
     return flv2mpeg4_process_flv_packet(mpeg4p2_ctx->ctx, 0, pkt->data, pkt->size, time_ms);
 }

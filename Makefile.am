@@ -2,7 +2,10 @@ ACLOCAL_AMFLAGS = -I m4
 
 bin_PROGRAMS = exteplayer3
 
+# the sources do not include config.h themselves (as upstream, which
+# builds without autotools): take it into every file
 AM_CPPFLAGS = \
+    -include $(top_builddir)/config.h \
     -I$(srcdir)/include \
     -I$(srcdir)/external \
     -I$(srcdir)/external/flv2mpeg4 \
@@ -11,8 +14,7 @@ AM_CPPFLAGS = \
     $(SSL_CFLAGS) \
     $(BLURAY_CFLAGS) \
     $(RTMP_CFLAGS) \
-    $(UDFREAD_CFLAGS) \
-    $(ALSA_CFLAGS)
+    $(UDFREAD_CFLAGS)
 
 AM_CFLAGS = -Wall -Wno-unused-parameter -Wno-unused-but-set-variable
 
@@ -52,6 +54,7 @@ exteplayer3_SOURCES = \
     output/writer/mipsel/wmv.c \
     output/writer/mipsel/vc1.c \
     playback/playback.c \
+    tools/ca_bundle.c \
     tools/debug.c \
     tools/pcm_export.c \
     tools/strbuffer.c \
@@ -66,7 +69,7 @@ exteplayer3_SOURCES = \
     external/plugins/src/png.c
 
 if HAVE_DREAMNEXTGEN
-exteplayer3_SOURCES += output/dream_audio.c output/dream_video.c
+exteplayer3_SOURCES += output/dream_video.c
 endif
 
 exteplayer3_LDADD = \
@@ -76,7 +79,6 @@ exteplayer3_LDADD = \
     $(BLURAY_LIBS) \
     $(RTMP_LIBS) \
     $(UDFREAD_LIBS) \
-    $(ALSA_LIBS) \
     $(ZLIB_LIBS) \
     $(BZ2_LIBS) \
     $(LZMA_LIBS) \
@@ -84,4 +86,4 @@ exteplayer3_LDADD = \
     $(LIBM_LIBS) \
     $(DL_LIBS)
 
-EXTRA_DIST = autogen.sh README.md
+EXTRA_DIST = autogen.sh README.md OPENBH.md

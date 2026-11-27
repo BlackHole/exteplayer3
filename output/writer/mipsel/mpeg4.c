@@ -50,7 +50,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -58,7 +58,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static int initialHeader = 1;
 
@@ -89,7 +89,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         mpeg4_err("parsing NULL Data. ignoring...\n");
         return 0;
@@ -101,7 +101,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    mpeg4_printf(10, "VideoPts %lld\n", call->Pts);
+    mpeg4_printf(10, "VideoPts %llu\n", call->Pts);
 
 
     unsigned int PacketLength = call->len;

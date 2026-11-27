@@ -38,6 +38,7 @@
 #include <pthread.h>
 #include <errno.h>
 #include <poll.h>
+#include <time.h>
 
 #include "common.h"
 #include "debug.h"
@@ -47,7 +48,7 @@
 #include "pes.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 #define cERR_LINUXDVB_NO_ERROR      0
@@ -81,10 +82,166 @@ pthread_mutex_t LinuxDVBmutex;
 
 static int64_t last_pts = 0;
 
+/* With EP3_FAKE_AUDIO_CLOCK=<ms> a stream without video has the position of an
+ * audio decoder that plays in real time from the first audio written after the
+ * start or a clear. After a clear the old position stays for <ms> before the
+ * new data plays, as on receivers whose decoders start again after a seek. */
+static int audioClockStallMs = -2; /* -2 = not read yet, -1 = off */
+static pthread_mutex_t audioClockMutex = PTHREAD_MUTEX_INITIALIZER;
+static int64_t audioClockBase = INVALID_PTS_VALUE; /* first PTS since the start or clear */
+static int64_t audioClockMax = INVALID_PTS_VALUE;  /* highest PTS since then */
+static int64_t audioClockStartUs;                  /* when audioClockBase plays */
+static int64_t audioClockClearUs = -1;             /* time of the clear, -1 = start */
+static int64_t audioClockShown = 0;
+
+static int64_t AudioClockNowUs(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+static bool AudioClockOn(void)
+{
+    if (audioClockStallMs == -2)
+    {
+        const char *env = getenv("EP3_FAKE_AUDIO_CLOCK");
+        audioClockStallMs = env && *env ? atoi(env) : -1;
+        if (audioClockStallMs < 0)
+            audioClockStallMs = -1;
+    }
+    return audioClockStallMs >= 0;
+}
+
+static void AudioClockReset(bool clear)
+{
+    pthread_mutex_lock(&audioClockMutex);
+    audioClockBase = INVALID_PTS_VALUE;
+    audioClockMax = INVALID_PTS_VALUE;
+    audioClockClearUs = clear ? AudioClockNowUs() : -1;
+    if (!clear)
+        audioClockShown = 0;
+    pthread_mutex_unlock(&audioClockMutex);
+}
+
+static void AudioClockWritten(int64_t pts)
+{
+    pthread_mutex_lock(&audioClockMutex);
+    if (audioClockBase == INVALID_PTS_VALUE)
+    {
+        audioClockBase = pts;
+        audioClockStartUs = AudioClockNowUs();
+        if (audioClockClearUs >= 0 && audioClockClearUs + audioClockStallMs * 1000LL > audioClockStartUs)
+            audioClockStartUs = audioClockClearUs + audioClockStallMs * 1000LL;
+    }
+    if (audioClockMax == INVALID_PTS_VALUE || pts > audioClockMax)
+        audioClockMax = pts;
+    pthread_mutex_unlock(&audioClockMutex);
+}
+
+static int64_t AudioClockPosition(void)
+{
+    int64_t now = AudioClockNowUs();
+    pthread_mutex_lock(&audioClockMutex);
+    if (audioClockBase != INVALID_PTS_VALUE && now >= audioClockStartUs)
+    {
+        int64_t pos = audioClockBase + (now - audioClockStartUs) * 9 / 100;
+        audioClockShown = pos < audioClockMax ? pos : audioClockMax;
+    }
+    int64_t shown = audioClockShown;
+    pthread_mutex_unlock(&audioClockMutex);
+    return shown;
+}
+
+/* With EP3_FAKE_VIDEO_LEAD=<ms> the video decoder holds up to <ms> of video
+ * ahead of what it shows, as receiver decoders and their buffers do: video is
+ * taken without pacing until that much is ahead of the position, which plays
+ * in real time from the first video written after the start or a clear. A
+ * clear drops what was ahead; the old position stays until video comes again. */
+static int videoLeadMs = -2; /* -2 = not read yet, -1 = off */
+static pthread_mutex_t videoClockMutex = PTHREAD_MUTEX_INITIALIZER;
+static int64_t videoClockBase = INVALID_PTS_VALUE; /* first PTS since the start or clear */
+static int64_t videoClockMax = INVALID_PTS_VALUE;  /* highest PTS since then */
+static int64_t videoClockStartUs;                  /* when videoClockBase is shown */
+static int64_t videoClockShown = 0;
+static uint32_t videoClockClears = 0;
+
+static bool VideoLeadOn(void)
+{
+    if (videoLeadMs == -2)
+    {
+        const char *env = getenv("EP3_FAKE_VIDEO_LEAD");
+        videoLeadMs = env && *env ? atoi(env) : -1;
+        if (videoLeadMs < 0)
+            videoLeadMs = -1;
+    }
+    return videoLeadMs >= 0;
+}
+
+static void VideoClockReset(bool start)
+{
+    pthread_mutex_lock(&videoClockMutex);
+    videoClockBase = INVALID_PTS_VALUE;
+    videoClockMax = INVALID_PTS_VALUE;
+    videoClockClears++;
+    if (start)
+        videoClockShown = 0;
+    pthread_mutex_unlock(&videoClockMutex);
+}
+
+/* under videoClockMutex */
+static int64_t VideoClockPositionLocked(int64_t now)
+{
+    if (videoClockBase != INVALID_PTS_VALUE && now >= videoClockStartUs)
+    {
+        int64_t pos = videoClockBase + (now - videoClockStartUs) * 9 / 100;
+        videoClockShown = pos < videoClockMax ? pos : videoClockMax;
+    }
+    return videoClockShown;
+}
+
+static int64_t VideoClockPosition(void)
+{
+    pthread_mutex_lock(&videoClockMutex);
+    int64_t shown = VideoClockPositionLocked(AudioClockNowUs());
+    pthread_mutex_unlock(&videoClockMutex);
+    return shown;
+}
+
+/* Takes video of this PTS once it is no more than the lead ahead of the position.
+ * A clear while it waits drops it. */
+static void VideoClockWrite(int64_t pts)
+{
+    pthread_mutex_lock(&videoClockMutex);
+    uint32_t clears = videoClockClears;
+    for (;;)
+    {
+        int64_t now = AudioClockNowUs();
+        if (videoClockClears != clears)
+            break;
+        if (videoClockBase == INVALID_PTS_VALUE)
+        {
+            videoClockBase = pts;
+            videoClockStartUs = now;
+        }
+        int64_t ahead = pts - (videoClockBase + (now - videoClockStartUs) * 9 / 100);
+        if (ahead <= videoLeadMs * 90LL)
+        {
+            if (videoClockMax == INVALID_PTS_VALUE || pts > videoClockMax)
+                videoClockMax = pts;
+            break;
+        }
+        pthread_mutex_unlock(&videoClockMutex);
+        usleep(10000);
+        pthread_mutex_lock(&videoClockMutex);
+    }
+    pthread_mutex_unlock(&videoClockMutex);
+}
+
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
-int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd);
+int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx);
 int32_t LinuxDvbBuffClose(Context_t *context);
 int32_t LinuxDvbBuffFlush(Context_t *context);
 int32_t LinuxDvbBuffResume(Context_t *context);
@@ -110,7 +267,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
 
     linuxdvb_printf(10, "v%d a%d\n", video, audio);
 
-    if (video && videofd < 0)
+    if (video && videofd < 0) 
     {
         videofd = open(VIDEODEV, O_CREAT | O_TRUNC | O_WRONLY | O_NONBLOCK, 0666);
         if (videofd < 0)
@@ -118,9 +275,11 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
             linuxdvb_err("opening fake video output: %s\n", strerror(errno));
             return cERR_LINUXDVB_ERROR;
         }
+        if (isBufferedOutput)
+            LinuxDvbBuffOpen(context, type, videofd, &LinuxDVBmutex);
     }
 
-    if (audio && audiofd < 0)
+    if (audio && audiofd < 0) 
     {
         audiofd = open(AUDIODEV, O_CREAT | O_TRUNC | O_WRONLY | O_NONBLOCK, 0666);
         if (audiofd < 0)
@@ -128,6 +287,8 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
             linuxdvb_err("opening fake audio output: %s\n", strerror(errno));
             return cERR_LINUXDVB_ERROR;
         }
+        if (isBufferedOutput)
+            LinuxDvbBuffOpen(context, type, audiofd, &LinuxDVBmutex);
     }
 
     return 0;
@@ -135,6 +296,8 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
 
 int LinuxDvbClose(Context_t  *context, char *type)
 {
+    if (isBufferedOutput)
+        LinuxDvbBuffClose(context);
     return 0;
 }
 
@@ -145,6 +308,9 @@ int LinuxDvbPlay(Context_t  *context, char *type)
 
 int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
 {
+    /* as the receiver output: a write that waits for room tries again */
+    if (!isBufferedOutput)
+        WriterWakeUp();
     return 0;
 }
 
@@ -168,7 +334,7 @@ int LinuxDvbContinue(Context_t  *context __attribute__((unused)), char * type) {
             ret = cERR_LINUXDVB_ERROR;
         }
     }
-
+    
     if (audio && audiofd != -1)
     {
         if (ioctl(audiofd, AUDIO_CONTINUE, NULL) == -1)
@@ -177,12 +343,14 @@ int LinuxDvbContinue(Context_t  *context __attribute__((unused)), char * type) {
             ret = cERR_LINUXDVB_ERROR;
         }
     }
-
+    
     if (isBufferedOutput)
         LinuxDvbBuffResume(context);
+    else
+        WriterWakeUp();
 
     linuxdvb_printf(10, "exiting\n");
-
+    
     return ret;
 }
 
@@ -191,7 +359,7 @@ int LinuxDvbAudioMute(Context_t  *context __attribute__((unused)), char *flag)
     return 0;
 }
 
-int LinuxDvbFlush(Context_t  *context __attribute__((unused)), char * type)
+int LinuxDvbFlush(Context_t  *context __attribute__((unused)), char * type) 
 {
     return 0;
 }
@@ -208,11 +376,25 @@ int LinuxDvbAVSync(Context_t  *context, char *type __attribute__((unused)))
 
 int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
 {
+    if (!isBufferedOutput)
+        WriterWakeUp();
     return 0;
 }
 
 int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long int* pts)
 {
+    if (last_pts != 0 && VideoLeadOn())
+    {
+        /* what the video decoder shows, behind what has been written */
+        *pts = (unsigned long long int)VideoClockPosition();
+        return 0;
+    }
+    if (last_pts == 0 && AudioClockOn())
+    {
+        /* no video written: the position of the audio decoder */
+        *pts = (unsigned long long int)AudioClockPosition();
+        return 0;
+    }
     *((unsigned long long int *)pts)=(unsigned long long int)last_pts;
     return 0;
 }
@@ -222,10 +404,22 @@ int LinuxDvbGetFrameCount(Context_t  *context __attribute__((unused)), unsigned 
     return cERR_LINUXDVB_NO_ERROR;
 }
 
-int LinuxDvbSwitch(Context_t  *context, char *type)
+int LinuxDvbSwitch(Context_t  *context, char *type) 
 {
 
     return cERR_LINUXDVB_NO_ERROR;
+}
+
+/* the DD+ restart of linuxdvb_mipsel.c is never due here */
+int LinuxDvbEac3RestartState(void)
+{
+    return 0;
+}
+
+/* the stop before the exit of linuxdvb_mipsel.c: no decoder to stop here */
+int LinuxDvbFallbackStop(void)
+{
+    return LINUXDVB_FALLBACK_NOTHING;
 }
 
 static int Write(void  *_context, void *_out)
@@ -244,15 +438,15 @@ static int Write(void  *_context, void *_out)
        linuxdvb_err("null pointer passed\n");
        return cERR_LINUXDVB_ERROR;
     }
-
+    
     video = !strcmp("video", out->type);
     audio = !strcmp("audio", out->type);
-
-    linuxdvb_printf(20, "DataLength=%u PrivateLength=%u Pts=%"PRIu64" FrameRate=%d\n",
+  
+    linuxdvb_printf(20, "DataLength=%u PrivateLength=%u Pts=%"PRIu64" FrameRate=%d\n", 
                                                     out->len, out->extralen, out->pts, out->frameRate);
     linuxdvb_printf(20, "v%d a%d\n", video, audio);
 
-    if (video)
+    if (video) 
     {
         char *Encoding = NULL;
         context->manager->video->Command(context, MANAGER_GETENCODING, &Encoding);
@@ -271,7 +465,7 @@ static int Write(void  *_context, void *_out)
         {
             linuxdvb_err("unknown video codec and no default writer %s\n",Encoding);
             ret = cERR_LINUXDVB_ERROR;
-        }
+        } 
         else
         {
             struct pollfd pfd[1];
@@ -318,7 +512,12 @@ static int Write(void  *_context, void *_out)
                 }
             }
 
-            if (out->pts != INVALID_PTS_VALUE)
+            if (out->pts != INVALID_PTS_VALUE && VideoLeadOn())
+            {
+                VideoClockWrite(out->pts);
+                last_pts = out->pts;
+            }
+            else if (out->pts != INVALID_PTS_VALUE)
             {
                 if (out->pts > last_pts)
                 {
@@ -357,7 +556,7 @@ static int Write(void  *_context, void *_out)
         }
 
         free(Encoding);
-    }
+    } 
     else if (audio)
     {
         char *Encoding = NULL;
@@ -377,9 +576,12 @@ static int Write(void  *_context, void *_out)
         {
             linuxdvb_err("unknown audio codec %s and no default writer\n",Encoding);
             ret = cERR_LINUXDVB_ERROR;
-        }
+        } 
         else
         {
+            if (out->pts != INVALID_PTS_VALUE && AudioClockOn())
+                AudioClockWritten(out->pts);
+
             call.fd             = audiofd;
             call.data           = out->data;
             call.len            = out->len;
@@ -414,13 +616,16 @@ static int Write(void  *_context, void *_out)
 
 static int reset(Context_t  *context)
 {
+    /* as the receiver output: what the write buffer holds goes */
+    if (isBufferedOutput)
+        LinuxDvbBuffFlush(context);
     return 0;
 }
 
 static int Command(void  *_context, OutputCmd_t command, void * argument) {
     Context_t* context = (Context_t*) _context;
     int ret = cERR_LINUXDVB_NO_ERROR;
-
+    
     linuxdvb_printf(50, "Command %d\n", command);
 
     switch(command) {
@@ -435,6 +640,10 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_PLAY: {	// 4
+        if (argument && !strcmp("audio", (char*)argument))
+            AudioClockReset(false);
+        if (argument && !strcmp("video", (char*)argument))
+            VideoClockReset(true);
         sCURRENT_PTS = 0;
         ret = LinuxDvbPlay(context, (char*)argument);
         break;
@@ -465,6 +674,10 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     }
     case OUTPUT_CLEAR: {
         ret = LinuxDvbClear(context, (char*)argument);
+        if (argument && !strcmp("audio", (char*)argument))
+            AudioClockReset(true);
+        if (!argument || !strcmp("video", (char*)argument))
+            VideoClockReset(false);
         reset(context);
         sCURRENT_PTS = 0;
         break;
@@ -481,11 +694,9 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     }
     case OUTPUT_SLOWMOTION: {
         return LinuxDvbSlowMotion(context, (char*)argument);
-        break;
     }
     case OUTPUT_AUDIOMUTE: {
         return LinuxDvbAudioMute(context, (char*)argument);
-        break;
     }
     case OUTPUT_GET_FRAME_COUNT: {
         unsigned long long int frameCount = 0;
@@ -496,6 +707,11 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     case OUTPUT_GET_PROGRESSIVE: {
         ret = cERR_LINUXDVB_NO_ERROR;
         *((int*)argument) = videoInfo.progressive;
+        break;
+    }
+    case OUTPUT_GET_VIDEO_INFO: {
+        /* the track description stays as FFmpeg gave it */
+        ret = cERR_LINUXDVB_NO_ERROR;
         break;
     }
     case OUTPUT_SET_BUFFER_SIZE: {
@@ -515,6 +731,12 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     case OUTPUT_GET_BUFFER_SIZE: {
         ret = cERR_LINUXDVB_NO_ERROR;
         *((uint32_t*)argument) = LinuxDvbBuffGetSize();
+        break;
+    }
+    case OUTPUT_AUDIO_CHANNEL: {
+        /* no decoder here: software decoded audio takes it in the container */
+        int channel = *((int*)argument);
+        ret = (channel >= OUTPUT_AUDIO_CHANNEL_LEFT && channel <= OUTPUT_AUDIO_CHANNEL_RIGHT) ? cERR_LINUXDVB_NO_ERROR : cERR_LINUXDVB_ERROR;
         break;
     }
     default:

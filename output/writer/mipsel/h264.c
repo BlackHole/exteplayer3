@@ -23,10 +23,6 @@
 /* Includes                      */
 /* ***************************** */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -56,9 +52,10 @@
 #include "misc.h"
 #include "pes.h"
 #include "writer.h"
+#include "avcc.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define IOVEC_SIZE 1024
 
@@ -67,17 +64,18 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static unsigned char           Head[] = {0, 0, 0, 1};
 static int                     initialHeader = 1;
 static unsigned int            NalLengthBytes = 1;
-static unsigned char           *CodecData     = NULL;
+static unsigned char           *CodecData     = NULL; 
 static unsigned int            CodecDataLen   = 0;
 static int                     avc3 = 0;
 static int                     sps_pps_in_stream = 0;
 static uint8_t                 *last_private_data;
 static unsigned int            last_private_size;
+static int                     resetPending = 0;
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
@@ -86,123 +84,184 @@ static unsigned int            last_private_size;
 /* MISC Functions                */
 /* ***************************** */
 
+/* Room for all SPS and PPS of a stream as Annex B NAL units (start code +
+ * data each); PreparCodecData() converts the avcC into a buffer of this size. */
+#define AVCC_TMP_SIZE 2048
+
 // Please see: https://bugzilla.mozilla.org/show_bug.cgi?id=1105771
 static int32_t UpdateExtraData(uint8_t **ppExtraData, uint32_t *pExtraDataSize, uint8_t *pData, uint32_t dataSize)
 {
     uint8_t *aExtraData = *ppExtraData;
-
+    
     if (aExtraData[0] != 1 || !pData) {
         // Not AVCC or nothing to update with.
         return -1;
     }
-
+    
     int32_t nalsize = (aExtraData[4] & 3) + 1;
-
-    uint8_t sps[256];
-    uint8_t spsIdx = 0;
-
-    uint8_t numSps = 0;
-
-    uint8_t pps[256];
-    uint8_t ppsIdx = 0;
-
+    
+    uint8_t sps[AVCC_TMP_SIZE];
+    uint32_t spsIdx = 0;
+    
+    uint32_t numSps = 0;
+    
+    uint8_t pps[AVCC_TMP_SIZE];
+    uint32_t ppsIdx = 0;
+    
     uint8_t numPps = 0;
 
-    if(nalsize != 4)
-    {
-        return -1;
-    }
+    /* what the collected sets need in PreparCodecData(), where each one
+     * gets a 4 byte start code instead of the 2 byte length it has here */
+    uint32_t annexbLen = 0;
 
     // Find SPS and PPS NALUs in AVCC data
     uint8_t *d = pData;
-    while (d + 4 < pData + dataSize)
+    while (d + nalsize < pData + dataSize)
     {
-        uint32_t nalLen = ReadUint32(d);
-        if (nalLen > (uint32_t)(pData + dataSize - d - 4))
+        /* the NAL length has 1 to 4 bytes, as told by the avcC */
+        uint32_t nalLen = 0;
+        int32_t k;
+        for (k = 0; k < nalsize; k++)
+        {
+            nalLen = (nalLen << 8) | d[k];
+        }
+        if (nalLen > (uint32_t)(pData + dataSize - d - nalsize))
         {
             h264_err("NAL length %u beyond the packet\n", nalLen);
             return -1;
         }
         
-        uint8_t nalType = d[4] & 0x1f;
-        if (nalType == 7)
+        /* an empty NAL has no type, the byte belongs to the next length */
+        uint8_t nalType = nalLen ? d[nalsize] & 0x1f : 0;
+        if (nalType == 7) 
         { /* SPS */
+        
+            if (annexbLen + 4 + nalLen > AVCC_TMP_SIZE)
+            {
+                h264_err("SPS no free space to copy...\n");
+                return -1;
+            }
+            annexbLen += 4 + nalLen;
 
             // 16 bits size
             sps[spsIdx++] = (uint8_t)(0xFF & (nalLen >> 8));
             sps[spsIdx++] = (uint8_t)(0xFF & nalLen);
 
-            if (spsIdx + nalLen >= sizeof(sps))
-            {
-                h264_err("SPS no free space to copy...\n");
-                return -1;
-            }
-            memcpy(&(sps[spsIdx]), d + 4, nalLen);
+            memcpy(&(sps[spsIdx]), d + nalsize, nalLen);
             spsIdx += nalLen;
-
+            
             numSps += 1;
-
+            
             h264_printf(10, "SPS len[%u]...\n", nalLen);
-        }
+        } 
         else if (nalType == 8)
         { /* PPS */
+
+            /* the avcC count of the PPS has 8 bits */
+            if (numPps == 255)
+            {
+                h264_err("too many PPS...\n");
+                return -1;
+            }
+
+            if (annexbLen + 4 + nalLen > AVCC_TMP_SIZE)
+            {
+                h264_err("PPS not free space to copy...\n");
+                return -1;
+            }
+            annexbLen += 4 + nalLen;
 
             // 16 bits size
             pps[ppsIdx++] = (uint8_t)(0xFF & (nalLen >> 8));
             pps[ppsIdx++] = (uint8_t)(0xFF & nalLen);
 
-            if (ppsIdx + nalLen >= sizeof(sps))
-            {
-                h264_err("PPS not free space to copy...\n");
-                return -1;
-            }
-            memcpy(&(pps[ppsIdx]), d + 4, nalLen);
+            memcpy(&(pps[ppsIdx]), d + nalsize, nalLen);
             ppsIdx += nalLen;
-
+            
             numPps += 1;
-
+            
             h264_printf(10, "PPS len[%u]...\n", nalLen);
         }
-        d += 4 + nalLen;
+        d += nalsize + nalLen;
     }
+    /* profile and level are taken from the first SPS, the SPS count has 5 bits */
+    if (numSps == 0 || numSps > 31 || spsIdx < 6)
+    {
+        return -1;
+    }
+
     uint32_t idx = 0;
-    *ppExtraData = malloc(7 + spsIdx + ppsIdx);
-    aExtraData = *ppExtraData;
+    aExtraData = malloc(7 + spsIdx + ppsIdx);
+    if (!aExtraData)
+    {
+        h264_err("allocating codec data failed\n");
+        return -1;
+    }
+    *ppExtraData = aExtraData;
     aExtraData[idx++] = 0x1;            // version
     aExtraData[idx++] = sps[3];         // profile
     aExtraData[idx++] = sps[4];         // profile compat
     aExtraData[idx++] = sps[5];         // level
-    aExtraData[idx++] = 0xff;           // nal size - 1
-
+    aExtraData[idx++] = 0xfc | (nalsize - 1); // nal size - 1
+    
     aExtraData[idx++] = 0xe0 | numSps;
     if (numSps)
     {
         memcpy(&(aExtraData[idx]), sps, spsIdx);
         idx += spsIdx;
     }
-
+    
     aExtraData[idx++] = numPps;
     if (numPps)
     {
         memcpy(&(aExtraData[idx]), pps, ppsIdx);
         idx += ppsIdx;
     }
-
+    
     h264_printf(10, "aExtraData len[%u]...\n", idx);
     *pExtraDataSize = idx;
     return 0;
 }
 
-#define AVCC_TMP_SIZE 2048
+/* The level limit of 4.1 was written for MIPS Broadcom decoders and gave
+ * artefacts at 1080p50/60 on ARM boxes: only MIPS builds apply it.
+ * EP3_H264_LEVEL41=1 forces it on, =0 off, on any CPU. A build can set its
+ * own default with -DH264_LEVEL41_DEFAULT=0|1. */
+#ifndef H264_LEVEL41_DEFAULT
+#if defined(__mips__) || defined(__mips)
+#define H264_LEVEL41_DEFAULT 1
+#else
+#define H264_LEVEL41_DEFAULT 0
+#endif
+#endif
 
-/* Limit the level of a SPS to 4.1, as done before for the first SPS. */
+static int LimitSpsLevelWanted(void)
+{
+    static int wanted = -1;
+    if (wanted < 0)
+    {
+        const char *env = getenv("EP3_H264_LEVEL41");
+        if (env && env[0])
+        {
+            wanted = env[0] != '0';
+        }
+        else
+        {
+            wanted = H264_LEVEL41_DEFAULT;
+        }
+    }
+    return wanted;
+}
+
+/* Log the level of a SPS from avcC and limit it to 4.1 where wanted, see
+ * LimitSpsLevelWanted(). */
 static void LimitSpsLevel(unsigned char *sps, unsigned int len)
 {
     static const uint8_t profile_num[] = { 66, 77, 88, 100 };
     static const char *const profile_str[] = { "baseline", "main", "extended", "high" };
     unsigned int i;
 
-    if (len <= 3 || sps[0] != 0x67)
+    if (len <= 3 || (sps[0] & 0x1f) != 7)
     {
         return;
     }
@@ -211,54 +270,217 @@ static void LimitSpsLevel(unsigned char *sps, unsigned int len)
         if (sps[1] == profile_num[i])
         {
             uint8_t level_org = sps[3];
-            h264_printf(10, "H264 %s profile@%d.%d", profile_str[i], level_org / 10 , level_org % 10);
+            if (level_org > 0x29 && LimitSpsLevelWanted())
+            {
+                h264_printf(10, "H264 %s profile@%d.%d patched down to 4.1!", profile_str[i], level_org / 10 , level_org % 10);
+                sps[3] = 0x29; // level 4.1
+            }
+            else
+            {
+                h264_printf(10, "H264 %s profile@%d.%d", profile_str[i], level_org / 10 , level_org % 10);
+            }
             return;
         }
     }
 }
 
-/* Append "count" parameter sets (16 bit length + data each) from avcC
- * to "out" as Annex B NAL units. Returns 0, or -1 if the data is truncated. */
-static int AppendParamSets(const unsigned char *data, unsigned int cd_len, unsigned int *cd_pos,
-                           unsigned int count, unsigned char *out, unsigned int *out_len, int is_sps)
-{
-    unsigned int n;
-    for (n = 0; n < count; ++n)
-    {
-        unsigned int pos = *cd_pos;
-        unsigned int len;
+/* High profile streams of some live encoders set constraint_set4_flag and
+ * constraint_set5_flag (constraint byte 0x0C, "Constrained High"). The
+ * Broadcom decoders show no picture with them, the same stream with the two
+ * flags cleared plays. The flags only tell that the stream keeps limits it
+ * keeps anyway (frame_mbs_only, no B slices), so clearing them does not
+ * change the decoding. EP3_H264_CONSTRAINED_HIGH=0 keeps them; a build can
+ * set its own default with -DH264_CONSTRAINED_HIGH_DEFAULT=0|1. */
+#ifndef H264_CONSTRAINED_HIGH_DEFAULT
+#define H264_CONSTRAINED_HIGH_DEFAULT 1
+#endif
 
-        if (cd_len < pos + 2)
+#define SPS_CONSTRAINT_SET45 0x0c
+
+/* room for the patched constraint and level bytes of the parameter sets in
+ * a packet, two for each of up to 32 SPS */
+#define CONSTRAINT_BYTES_MAX (2 * 32)
+
+static int ConstrainedHighLogged;
+
+static int ClearConstrainedHighWanted(void)
+{
+    static int wanted = -1;
+    if (wanted < 0)
+    {
+        const char *env = getenv("EP3_H264_CONSTRAINED_HIGH");
+        if (env && env[0])
         {
-            return -1;
+            wanted = env[0] != '0';
         }
-        len = (data[pos] << 8) | data[pos + 1];
-        pos += 2;
-        if (cd_len < pos + len || *out_len + sizeof(Head) + len > AVCC_TMP_SIZE)
+        else
         {
-            return -1;
+            wanted = H264_CONSTRAINED_HIGH_DEFAULT;
         }
-        memcpy(out + *out_len, Head, sizeof(Head));
-        *out_len += sizeof(Head);
-        memcpy(out + *out_len, data + pos, len);
-        if (is_sps)
-        {
-            LimitSpsLevel(out + *out_len, len);
-        }
-        *out_len += len;
-        *cd_pos = pos + len;
     }
-    return 0;
+    return wanted;
+}
+
+/* The constraint byte to write for the SPS NAL unit "sps" (NAL header
+ * first) of "len" bytes, or -1 when it stays as it is. Only the High
+ * profiles (100 High, 110 High 10, 122 High 4:2:2, 244 High 4:4:4
+ * Predictive) lose constraint_set4/5; constraint_set3 (the intra profiles)
+ * and the MVC and other profiles are left alone.
+ * NAL header and profile_idc are not 0, so no emulation prevention byte can
+ * stand at the constraint byte or the level byte: both are the RBSP bytes.
+ * With level_idc not 0 behind it, a cleared constraint byte cannot form a
+ * 00 00 that would need one either. */
+static int SpsConstraintByte(const uint8_t *sps, unsigned int len)
+{
+    if (len < 4 || (sps[0] & 0x1f) != 7 || !(sps[2] & SPS_CONSTRAINT_SET45) || !sps[3])
+    {
+        return -1;
+    }
+    switch (sps[1])
+    {
+    case 100:
+    case 110:
+    case 122:
+    case 244:
+        break;
+    default:
+        return -1;
+    }
+    if (!ClearConstrainedHighWanted())
+    {
+        return -1;
+    }
+    if (!ConstrainedHighLogged)
+    {
+        ConstrainedHighLogged = 1;
+        h264_printf(10, "H264 profile %d: constraint_set4/5 cleared (0x%02x -> 0x%02x)\n",
+                    sps[1], sps[2], sps[2] & ~SPS_CONSTRAINT_SET45);
+    }
+    return sps[2] & ~SPS_CONSTRAINT_SET45;
+}
+
+/* The level byte to write for the SPS NAL unit "sps" of "len" bytes, or -1
+ * when it stays as it is: the limit of LimitSpsLevel() for the SPS of the
+ * stream (in-band, Annex B), without its log line for every SPS. */
+static int SpsLevelByte(const uint8_t *sps, unsigned int len)
+{
+    if (len < 4 || (sps[0] & 0x1f) != 7 || sps[3] <= 0x29 || !LimitSpsLevelWanted())
+    {
+        return -1;
+    }
+    switch (sps[1])
+    {
+    case 66:
+    case 77:
+    case 88:
+    case 100:
+        return 0x29;
+    default:
+        return -1;
+    }
+}
+
+/* Patched constraint and level bytes of the parameter sets inside a packet.
+ * The packet is not changed (its data can be shared with other references):
+ * the iovec takes the two bytes from here instead. */
+typedef struct
+{
+    uint8_t      byte[CONSTRAINT_BYTES_MAX];
+    unsigned int count;
+} ConstraintBytes_t;
+
+/* The constraint byte and the level byte to write for a SPS, see
+ * SpsConstraintByte() and SpsLevelByte(), into the next two bytes of
+ * "bytes": 0 when both stay as they are or there is no room. Both are
+ * RBSP bytes (see SpsConstraintByte()), and a level of 4.1 is not 0. */
+static int SpsPatch(const uint8_t *sps, unsigned int len, ConstraintBytes_t *bytes)
+{
+    int constraint;
+    int level;
+    if (bytes->count + 2 > CONSTRAINT_BYTES_MAX)
+    {
+        return 0;
+    }
+    constraint = SpsConstraintByte(sps, len);
+    level = SpsLevelByte(sps, len);
+    if (constraint < 0 && level < 0)
+    {
+        return 0;
+    }
+    bytes->byte[bytes->count] = constraint >= 0 ? (uint8_t)constraint : sps[2];
+    bytes->byte[bytes->count + 1] = level >= 0 ? (uint8_t)level : sps[3];
+    return 1;
+}
+
+/* Adds the NAL unit "nal" of "len" bytes to the iovec, a SPS whose
+ * constraint or level byte is patched in three parts when "room" has them. */
+static int AddNal(struct iovec *iov, int ic, int room, uint8_t *nal, uint32_t len, ConstraintBytes_t *bytes)
+{
+    if (room >= 3 && SpsPatch(nal, len, bytes))
+    {
+        iov[ic].iov_base = nal;
+        iov[ic++].iov_len = 2;
+        iov[ic].iov_base = &bytes->byte[bytes->count];
+        iov[ic++].iov_len = 2;
+        bytes->count += 2;
+        iov[ic].iov_base = nal + 4;
+        iov[ic++].iov_len = len - 4;
+        return ic;
+    }
+    iov[ic].iov_base = nal;
+    iov[ic++].iov_len = len;
+    return ic;
+}
+
+/* Adds the Annex B data "buf" to the iovec. Each SPS in front of the first
+ * slice whose constraint or level byte is patched splits it around these
+ * two bytes; at most "room" entries are used. */
+static int AddAnnexB(struct iovec *iov, int ic, int room, uint8_t *buf, uint32_t len, ConstraintBytes_t *bytes)
+{
+    uint32_t start = 0;
+    uint32_t i;
+
+    for (i = 0; room >= 3 && len >= 4 && i < len - 3; i++)
+    {
+        if (buf[i] || buf[i + 1] || buf[i + 2] != 1)
+        {
+            continue;
+        }
+        uint32_t nal = i + 3;
+        uint8_t type = buf[nal] & 0x1f;
+        if (type >= 1 && type <= 5)
+        {
+            /* slice data: the parameter sets are in front of it */
+            break;
+        }
+        if (SpsPatch(buf + nal, len - nal, bytes))
+        {
+            iov[ic].iov_base = buf + start;
+            iov[ic++].iov_len = nal + 2 - start;
+            iov[ic].iov_base = &bytes->byte[bytes->count];
+            iov[ic++].iov_len = 2;
+            bytes->count += 2;
+            room -= 2;
+            start = nal + 4;
+            i = start - 1;
+        }
+    }
+    if (start < len)
+    {
+        iov[ic].iov_base = buf + start;
+        iov[ic++].iov_len = len - start;
+    }
+    return ic;
 }
 
 static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigned int *NalLength)
 {
     unsigned char tmp[AVCC_TMP_SIZE];
-    unsigned int tmp_len = 0;
-    unsigned int cd_pos = 6;
+    AnnexBSets_t sets = {.buf = tmp, .size = sizeof(tmp)};
     unsigned int num_sps = 0;
     unsigned int num_pps = 0;
-    int32_t ret = 0;
+    unsigned int i;
+    int length_size;
 
     h264_printf(10, "H264 check codec data..!\n");
     if (!data)
@@ -280,56 +502,50 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
 
     /* Pass on all SPS and all PPS from avcC, not only the first ones.
      * Some live streams use a second PPS (e.g. weighted bi-prediction
-     * for B slices) and never repeat it in-band. */
-    num_sps = data[5] & 0x1f;
-    if (AppendParamSets(data, cd_len, &cd_pos, num_sps, tmp, &tmp_len, 1) != 0)
+     * for B slices) and never repeat it in-band. Each set goes once and
+     * without trailing zeros: replay clips have SPS and PPS twice in
+     * the avcC, one PPS with a zero byte at its end, and the decoders
+     * of the boxes showed no picture with them. */
+    length_size = AvccToAnnexB(data, cd_len, &sets, &num_sps, &num_pps);
+    if (!length_size)
     {
-        h264_printf(10, "codec_data too short(2)");
-        ret = -2;
+        h264_printf(10, "codec_data without usable SPS/PPS (%u SPS, %u PPS)", num_sps, num_pps);
+        return -2;
     }
-    else if (cd_len < cd_pos + 1)
+    for (i = 0; i < sets.count; i++)
     {
-        h264_printf(10, "codec_data too short(3)");
-        ret = -3;
-    }
-    else
-    {
-        num_pps = data[cd_pos];
-        cd_pos += 1;
-        if (AppendParamSets(data, cd_len, &cd_pos, num_pps, tmp, &tmp_len, 0) != 0)
+        if ((tmp[sets.at[i]] & 0x1f) == 7)
         {
-            h264_printf(10, "codec_data too short(4)");
-            ret = -4;
-        }
-        else if (num_sps == 0 || num_pps == 0)
-        {
-            h264_printf(10, "codec_data without SPS/PPS");
-            ret = -3;
+            /* tmp is a copy, the avcC of the stream stays as it is */
+            int byte = SpsConstraintByte(tmp + sets.at[i], sets.length[i]);
+            if (byte >= 0)
+            {
+                tmp[sets.at[i] + 2] = (uint8_t)byte;
+            }
+            LimitSpsLevel(tmp + sets.at[i], sets.length[i]);
         }
     }
 
-    if (ret == 0)
+    CodecData = malloc(sets.len);
+    if (!CodecData)
     {
-        CodecData = malloc(tmp_len);
-        memcpy(CodecData, tmp, tmp_len);
-        CodecDataLen = tmp_len;
-        *NalLength = (data[4] & 0x03) + 1;
-        h264_printf(10, "H264 codec data: %u SPS, %u PPS, %u bytes", num_sps, num_pps, tmp_len);
+        h264_err("allocating codec data failed\n");
+        return -1;
     }
-    return ret;
+    memcpy(CodecData, tmp, sets.len);
+    CodecDataLen = sets.len;
+    *NalLength = length_size;
+    h264_printf(10, "H264 codec data: %u SPS, %u PPS, %u bytes", num_sps, num_pps, sets.len);
+    return 0;
 }
 
+/* reset() is called from the command thread while the demuxer thread can be
+ * inside writeData(), blocked in the write with CodecData in its iovec. The
+ * state and the buffers therefore belong to writeData() alone: reset() only
+ * leaves a request and the next writeData() starts over. */
 static int reset()
 {
-    free(last_private_data);
-    last_private_data = NULL;
-    last_private_size = 0;
-    free(CodecData);
-    CodecData = NULL;
-    CodecDataLen = 0;
-    initialHeader = 1;
-    avc3 = 0;
-    sps_pps_in_stream = 0;
+    __atomic_store_n(&resetPending, 1, __ATOMIC_RELEASE);
     return 0;
 }
 
@@ -344,6 +560,8 @@ static int writeData(void* _call)
     int                     len = 0;
     int ic = 0;
     struct iovec iov[IOVEC_SIZE];
+    ConstraintBytes_t constraintBytes;
+    constraintBytes.count = 0;
     h264_printf(20, "\n");
 
     if (call == NULL)
@@ -355,10 +573,10 @@ static int writeData(void* _call)
     TimeDelta = call->FrameRate;
     TimeScale = call->FrameScale;
     VideoPts  = call->Pts;
+    
+    h264_printf(20, "VideoPts %llu - %u %u\n", call->Pts, TimeDelta, TimeScale);
 
-    h264_printf(20, "VideoPts %lld - %d %d\n", call->Pts, TimeDelta, TimeScale);
-
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         h264_err("NULL Data. ignoring...\n");
         return 0;
@@ -368,6 +586,15 @@ static int writeData(void* _call)
     {
         h264_err("file pointer < 0. ignoring ...\n");
         return 0;
+    }
+
+    if (__atomic_exchange_n(&resetPending, 0, __ATOMIC_ACQ_REL))
+    {
+        /* CodecData is rebuilt below, last_private_data stays valid */
+        initialHeader = 1;
+        avc3 = 0;
+        sps_pps_in_stream = 0;
+        ConstrainedHighLogged = 0;
     }
 
     if (call->private_data && call->private_size &&
@@ -390,7 +617,7 @@ static int writeData(void* _call)
     }
 
     /* AnnexA */
-    if( !avc3 && ((1 < call->private_size && 0 == call->private_data[0]) ||
+    if( !avc3 && ((NULL != call->private_data && 1 < call->private_size && 0 == call->private_data[0]) ||
         (call->len > 3) && ((call->data[0] == 0x00 && call->data[1] == 0x00 && call->data[2] == 0x00 && call->data[3] == 0x01) ||
         (call->data[0] == 0xff && call->data[1] == 0xff && call->data[2] == 0xff && call->data[3] == 0xff))))
     {
@@ -399,7 +626,7 @@ static int writeData(void* _call)
         uint32_t PacketLength = 0;
         uint32_t FakeStartCode = (call->Version << 8) | PES_VERSION_FAKE_START_CODE;
         iov[ic++].iov_base = PesHeader;
-
+        
         while (InsertPrivData && i < 36 && (call->len - i) > 5)
         {
             if ( (call->data[i] == 0x00 && call->data[i+1] == 0x00 && call->data[i+2] == 0x00 && call->data[i+3] == 0x01 && (call->data[i+4] == 0x67 || call->data[i+4] == 0x68)) )
@@ -409,27 +636,24 @@ static int writeData(void* _call)
             }
             i += 1;
         }
-
+        
         if (InsertPrivData && call->private_data && call->private_size > 0 && initialHeader)
         {
             initialHeader = 0;
-            iov[ic].iov_base  = call->private_data;
-            iov[ic++].iov_len = call->private_size;
+            ic = AddAnnexB(iov, ic, (IOVEC_SIZE - 1) / 2, call->private_data, call->private_size, &constraintBytes);
             PacketLength     += call->private_size;
         }
 
-        iov[ic].iov_base  = call->data;
-        iov[ic++].iov_len = call->len;
+        ic = AddAnnexB(iov, ic, IOVEC_SIZE - ic, call->data, call->len, &constraintBytes);
         PacketLength     += call->len;
-
+        
 #ifdef HAVE_DREAMNEXTGEN
-        /* AML DVB-API video device wants raw ES (Annex-B NALU), no PES
-         * wrap. writev skips entries with iov_len=0. */
+        /* The AML DVB-API video device takes raw Annex-B ES, without PES. */
         iov[0].iov_len = 0;
 #else
         iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, FakeStartCode);
 #endif
-
+        
         return call->WriteV(call->fd, iov, ic);
     }
     else if (!call->private_data || call->private_size < 7 || 1 != call->private_data[0])
@@ -439,10 +663,10 @@ static int writeData(void* _call)
     }
 
     uint32_t PacketLength = 0;
-
+    
     ic = 0;
     iov[ic++].iov_base = PesHeader;
-
+    
     if (!avc3 && initialHeader)
     {
         if (CodecData)
@@ -450,16 +674,16 @@ static int writeData(void* _call)
             free(CodecData);
             CodecData = NULL;
         }
-
+        
         uint8_t  *private_data = call->private_data;
         uint32_t  private_size = call->private_size;
-
+    
         if ( PreparCodecData(private_data, private_size, &NalLengthBytes))
         {
             UpdateExtraData(&private_data, &private_size, call->data, call->len);
             PreparCodecData(private_data, private_size, &NalLengthBytes);
         }
-
+        
         if (private_data != call->private_data)
         {
             /* the packet had no parameter sets: look again in the next one */
@@ -470,8 +694,27 @@ static int writeData(void* _call)
             free(private_data);
             private_data = NULL;
         }
+        
+        /* stream has its own SPS/PPS: do not prepend avcC ones, they can differ
+         * (re-cut TV recordings) and break the picture */
+        if (!sps_pps_in_stream && NalLengthBytes >= 1 && NalLengthBytes <= 4)
+        {
+            uint32_t p = 0;
+            while (p + NalLengthBytes < (uint32_t)call->len)
+            {
+                uint32_t nl = 0, k;
+                for (k = 0; k < NalLengthBytes; k++) nl = (nl << 8) | call->data[p + k];
+                /* an empty NAL has no type, the byte belongs to the next length */
+                if (nl == 0) { p += NalLengthBytes; continue; }
+                uint8_t t = call->data[p + NalLengthBytes] & 0x1f;
+                if (t == 7 || t == 8) { sps_pps_in_stream = 1; break; }
+                /* corrupt NAL length */
+                if (nl > (uint32_t)call->len - p - NalLengthBytes) break;
+                p += NalLengthBytes + nl;
+            }
+        }
 
-        if (CodecData != NULL)
+        if (CodecData != NULL && !sps_pps_in_stream)
         {
             iov[ic].iov_base  = CodecData;
             iov[ic++].iov_len = CodecDataLen;
@@ -490,7 +733,7 @@ static int writeData(void* _call)
                 h264_err(">> Drop data due to ic overflow\n");
                 return -1;
             }
-
+            
             uint32_t pack_len = 0;
             uint32_t i = 0;
             if (call->len - pos < NalLengthBytes)
@@ -509,30 +752,44 @@ static int writeData(void* _call)
                 pack_len = call->len - pos;
             }
 
+            /* parameter sets of the stream without trailing zeros, see
+             * PreparCodecData() */
+            uint32_t nal_len = pack_len;
+            if (pack_len && ((call->data[pos] & 0x1f) == 7 || (call->data[pos] & 0x1f) == 8))
+            {
+                nal_len = NalTrim(call->data + pos, pack_len);
+            }
+            /* an empty NAL would be a start code without a NAL unit */
+            if (!nal_len)
+            {
+                pos += pack_len;
+                continue;
+            }
+            
             iov[ic].iov_base  = Head;
             iov[ic++].iov_len = sizeof(Head);
             PacketLength += sizeof(Head);
-
-            iov[ic].iov_base  = call->data + pos;
-            iov[ic++].iov_len = pack_len;
-            PacketLength     += pack_len;
-
+            
+            ic = AddNal(iov, ic, IOVEC_SIZE - ic, call->data + pos, nal_len, &constraintBytes);
+            PacketLength     += nal_len;
+    
             pos += pack_len;
-
+            
         } while ((pos + NalLengthBytes) < call->len);
-
-        h264_printf (10, "<<<< PacketLength [%d]\n", PacketLength);
+        
+        h264_printf (10, "<<<< PacketLength [%u]\n", PacketLength);
 #ifdef HAVE_DREAMNEXTGEN
+        /* The AML DVB-API video device takes raw Annex-B ES, without PES. */
         iov[0].iov_len = 0;
 #else
         iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, 0);
 #endif
-
+        
         len = call->WriteV(call->fd, iov, ic);
         PacketLength += iov[0].iov_len;
         if (PacketLength != len)
         {
-            h264_err("<<<< not all data have been written [%d/%d]\n", len, PacketLength);
+            h264_err("<<<< not all data have been written [%d/%u]\n", len, PacketLength);
         }
     }
 
@@ -542,8 +799,6 @@ static int writeData(void* _call)
 
 static int writeReverseData(void* _call)
 {
-    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
-
     return 0;
 }
 /* ***************************** */

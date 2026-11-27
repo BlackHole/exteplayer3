@@ -51,7 +51,7 @@
 #include "pcm.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -59,7 +59,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static int32_t  initialHeader = 1;
@@ -67,7 +67,7 @@ static uint32_t SubFrameLen = 0;
 static uint32_t SubFramesPerPES = 0;
 
 // reference: search for TypeLpcmDVDAudio in player/frame_parser/frame_parser_audio_lpcm.cpp
-static const uint8_t clpcm_prv[14] =
+static const uint8_t clpcm_prv[14] = 
 {
     0xA0,   //sub_stream_id
     0, 0,   //resvd and UPC_EAN_ISRC stuff, unused
@@ -75,7 +75,7 @@ static const uint8_t clpcm_prv[14] =
     0, 9,   //first_access_unit_pointer
     0x00,   //emph,rsvd,stereo,downmix
     0x0F,   //quantisation word length 1,2
-    0x0F,   //audio sampling freqency 1,2
+    0x0F,   //audio sampling frequency 1,2
     0,      //resvd, multi channel type
     0,      //bit shift on channel GR2, assignment
     0x80,   //dynamic range control
@@ -135,6 +135,16 @@ static int32_t prepareClipPlay(int32_t uNoOfChannels, int32_t uSampleRate, int32
     SubFrameLen *= uNoOfChannels;
     SubFrameLen *= (uBitsPerSample / 8);
 
+    /* a sample rate the LPCM header has no code for (32 kHz, 22.05 kHz...),
+     * no channels, or a subframe larger than a PES: not played, SubFrameLen
+     * 0 tells writeData() */
+    if (SubFrameLen == 0 || SubFrameLen > (2048 - 18) - sizeof(lpcm_prv))
+    {
+        pcm_err("PCM not supported: rate %d, channels %d, bits %d\n", uSampleRate, uNoOfChannels, uBitsPerSample);
+        SubFrameLen = 0;
+        return 1;
+    }
+
     //rewrite PES size to have as many complete subframes per PES as we can
     // FIXME: PES header size was hardcoded to 18 in previous code. Actual size returned by InsertPesHeader is 14.
     SubFramesPerPES = ((2048 - 18) - sizeof(lpcm_prv))/SubFrameLen;
@@ -143,10 +153,12 @@ static int32_t prepareClipPlay(int32_t uNoOfChannels, int32_t uSampleRate, int32
     //set number of channels
     lpcm_prv[10] = uNoOfChannels - 1;
 
-    switch(uBitsPerSample)
+    switch(uBitsPerSample) 
     {
         case 24:
             lpcm_prv[7] |= 0x20;
+            /* fall through */
+            FALLTHROUGH;
         case 16:
             break;
         default:
@@ -177,9 +189,9 @@ static int32_t writeData(void *_call)
         return 0;
     }
 
-    pcm_printf(10, "AudioPts %lld\n", call->Pts);
+    pcm_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if (!call->data || (call->len <= 0))
+    if (!call->data || (call->len == 0))
     {
         pcm_err("parsing NULL Data. ignoring...\n");
         return 0;
@@ -205,18 +217,24 @@ static int32_t writeData(void *_call)
             case AV_CODEC_ID_PCM_S16LE:
             case AV_CODEC_ID_PCM_U16LE:
                 LE = 1;
+                /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S16BE:
             case AV_CODEC_ID_PCM_U16BE:
                 break;
             case AV_CODEC_ID_PCM_S24LE:
             case AV_CODEC_ID_PCM_U24LE:
                 LE = 1;
+                /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S24BE:
             case AV_CODEC_ID_PCM_U24BE:
                 break;
             case AV_CODEC_ID_PCM_S32LE:
             case AV_CODEC_ID_PCM_U32LE:
                 LE = 1;
+                /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S32BE:
             case AV_CODEC_ID_PCM_U32BE:
                 break;
@@ -227,12 +245,24 @@ static int32_t writeData(void *_call)
         prepareClipPlay(pcmPrivateData->channels, pcmPrivateData->sample_rate, pcmPrivateData->bits_per_coded_sample, LE);
     }
 
+    if (SubFrameLen == 0)
+    {
+        /* not supported, see prepareClipPlay() */
+        return 0;
+    }
+
     uint8_t *buffer = call->data;
     uint32_t size = call->len;
 
     uint32_t n;
     uint8_t *injectBuffer = malloc(SubFrameLen);
     uint32_t pos;
+
+    if (!injectBuffer)
+    {
+        pcm_err("allocating the inject buffer failed\n");
+        return 0;
+    }
 
     for(pos = 0; pos < size; )
     {
@@ -268,7 +298,7 @@ static int32_t writeData(void *_call)
         iov[2].iov_len = SubFrameLen;
 
         //write the PCM data
-        if(16 == pcmPrivateData->bits_per_coded_sample)
+        if(16 == pcmPrivateData->bits_per_coded_sample) 
         {
             for(n=0; n<SubFrameLen; n+=2)
             {
@@ -277,7 +307,7 @@ static int32_t writeData(void *_call)
                 injectBuffer[n]=injectBuffer[n+1];
                 injectBuffer[n+1]=tmp;
             }
-        }
+        } 
         else
         {
             //      0   1   2   3   4   5   6   7   8   9  10  11

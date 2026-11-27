@@ -50,7 +50,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -58,7 +58,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -82,15 +82,20 @@ static int writeData(void* _call)
 
     mp3_printf(10, "\n");
 
-    if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0) {
-        wma_err("Wrong input call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
+    if (call == NULL) {
+        mp3_err("call data is NULL...\n");
         return 0;
     }
 
-    mp3_printf(10, "AudioPts %lld\n", call->Pts);
+    if (call->data == NULL || call->len == 0 || call->fd < 0) {
+        wma_err("Wrong input call: %p, data: %p, len: %u, fd: %d\n", call, call->data, call->len, call->fd);
+        return 0;
+    }
+
+    mp3_printf(10, "AudioPts %llu\n", call->Pts);
 
     call->private_size = 0;
-
+    
     uint32_t headerSize = InsertPesHeader (PesHeader, call->len + call->private_size, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
     if(call->private_size > 0)
     {
@@ -134,7 +139,7 @@ static WriterCaps_t caps_mpegl3 = {
     eAudio,
     "A_MPEG/L3",
     AUDIO_ENCODING_MPEG2,
-    AUDIOTYPE_MP3,
+    AUDIOTYPE_MPEG, /* MP2: Dreambox does not play it as 0xA (MP3) */
     -1
 };
 
