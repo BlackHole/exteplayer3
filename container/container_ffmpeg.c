@@ -462,6 +462,22 @@ static int packet_matches_track(const Track_t *track, unsigned int context_index
     return track && track->AVIdx == context_index && track->stream == stream;
 }
 
+/* Compressed bytes of the selected video and audio track, for the live
+ * bitrate (the "BR" command). They wrap at 4 GB: the reader takes the
+ * difference of two readings modulo 2^32. 32 bit, so a reading from the
+ * command thread is never torn. */
+static volatile uint32_t g_video_bytes;
+static volatile uint32_t g_audio_bytes;
+static volatile int      g_have_video_bytes;
+static volatile int      g_have_audio_bytes;
+
+/* -1 when the stream has no such track (yet) */
+void container_ffmpeg_get_bitrate_bytes(int64_t *video, int64_t *audio)
+{
+    *video = g_have_video_bytes ? (int64_t)g_video_bytes : -1;
+    *audio = g_have_audio_bytes ? (int64_t)g_audio_bytes : -1;
+}
+
 static void select_subtitle_stream(AVFormatContext *av, int id)
 {
     unsigned int i;
@@ -3061,6 +3077,11 @@ static void FFMPEGThread(Context_t *context)
             if (packet_matches_track(videoTrack, cAVIdx,
                                      avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
+                if (packet.size > 0)
+                {
+                    g_video_bytes += (uint32_t)packet.size;
+                    g_have_video_bytes = 1;
+                }
                 updateHevcHdr(context, videoTrack, cAVIdx, &packet);
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
                 AVCodecContext *codec_context = videoTrack->avCodecCtx;
@@ -3179,6 +3200,11 @@ static void FFMPEGThread(Context_t *context)
                                           avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
                 AVStream *stream = audioTrack->stream;
+                if (packet.size > 0)
+                {
+                    g_audio_bytes += (uint32_t)packet.size;
+                    g_have_audio_bytes = 1;
+                }
                 uint8_t skipPacket = 0;
                 int64_t mapped_pts;
                 int first_packet = currentAudioPts == -1;

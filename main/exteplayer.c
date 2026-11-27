@@ -83,6 +83,7 @@ extern void insert_pcm_as_lpcm_set(int32_t val);
 extern void progressive_playback_set(int32_t val);
 extern int LinuxDvbEac3RestartState(void);
 extern int container_ffmpeg_audio_info_generation(void);
+extern void container_ffmpeg_get_bitrate_bytes(int64_t *video, int64_t *audio);
 
 extern OutputHandler_t         OutputHandler;
 extern PlaybackHandler_t       PlaybackHandler;
@@ -1628,6 +1629,19 @@ int main(int argc, char* argv[])
                     DUMP_BOOL(ptrP->isVideo), DUMP_BOOL(ptrP->isAudio), DUMP_BOOL(0), DUMP_BOOL(0), DUMP_BOOL(0), DUMP_BOOL(0), DUMP_BOOL(ptrP->abortRequested) );
                 }
 
+                break;
+            }
+            case 'B':
+            {
+                /* "BR": compressed bytes of the selected video / audio track
+                 * so far (wrapping at 2^32, -1 = no such track), for a live
+                 * bitrate in the client */
+                if ('R' == argvBuff[1])
+                {
+                    int64_t vbytes = -1, abytes = -1;
+                    container_ffmpeg_get_bitrate_bytes(&vbytes, &abytes);
+                    E2iSendMsg("{\"BR\":{\"v\":%"PRId64",\"a\":%"PRId64"}}\n", vbytes, abytes);
+                }
                 break;
             }
             case 'n':
