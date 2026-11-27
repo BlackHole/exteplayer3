@@ -977,17 +977,13 @@ extern int LinuxDvbEac3RestartState(void);
  * thread out of the output meanwhile, as it does for a switch. */
 static void Eac3PassthroughRestart(void)
 {
-    uint8_t wasSeeking = g_player->playback->isSeeking;
-    int32_t id = -1;
+    /* OpenBH: the restart of the OpenBH version that works on the Vu+
+     * Ultimo 4K / Duo 4K SE: the audio output is switched (stop, bypass mode,
+     * play), then a 0 s seek feeds the audio again */
+    int64_t sec = 0;
 
-    g_player->playback->isSeeking = 1;
-    if (0 == g_player->manager->audio->Command(g_player, MANAGER_GET, &id) && id >= 0 &&
-        g_player->container && g_player->container->selectedContainer &&
-        0 == g_player->container->selectedContainer->Command(g_player, CONTAINER_SWITCH_AUDIO, &id))
-    {
-        g_player->output->audio->Command(g_player, OUTPUT_SWITCH, (void*)"audio");
-    }
-    g_player->playback->isSeeking = wasSeeking;
+    g_player->output->audio->Command(g_player, OUTPUT_SWITCH, (void*)"audio");
+    g_player->playback->Command(g_player, PLAYBACK_SEEK, (void*)&sec);
 }
 
 /* Non-blocking read of a command. The end of a command pipe (or socket)

@@ -34,6 +34,15 @@ themselves, so `Makefile.am` passes `-include config.h` to every file.
   video and audio track so far, 32 bit and wrapping, `-1` when there is no
   such track. ServiceApp turns them into the kbit/s of `sVideoBitrate` /
   `sAudioBitrate` for the BitrateInfo converter.
+- **DD+ start restart on Vu+ Ultimo 4K / Duo 4K SE as in OpenBH.** The
+  first DD+ passthrough start on these boxes stays silent until the audio
+  output is restarted. skyjet arms that restart only at the first audio
+  start of a playback (not for DASH) and does it as a container switch to
+  the same track; with it native DD+ files stayed silent. OpenBH keeps its
+  own working version: armed at every audio start (`LinuxDvbPlay()` in
+  `output/linuxdvb_mipsel.c`), the model and mode compared by prefix, and
+  `Eac3PassthroughRestart()` in `main/exteplayer.c` switches the audio
+  output and then seeks by 0 s.
 - **AC-4 description.** `d` is `Dolby AC-4` for AC-4 (skyjet: FFmpeg's
   name `ac4`).
 

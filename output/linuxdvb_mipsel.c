@@ -471,7 +471,6 @@ out:
 #define EAC3_RESTART_DELAY_MS 100
 #define EAC3_RESTART_FAST_POLL_MS 5000
 static volatile int eac3Restart = 0;
-static int eac3RestartChecked = 0;
 static struct timespec eac3PlayTime;   /* set before the state becomes 1 */
 static struct timespec eac3PacketTime; /* set before the state becomes 2 */
 
@@ -650,8 +649,9 @@ static bool LinuxDvbEac3NeedsRestart(void)
     if (!LinuxDvbReadProcLine("/proc/stb/info/vumodel", model, sizeof(model)) ||
         !LinuxDvbReadProcLine("/proc/stb/audio/ac3", mode, sizeof(mode)))
         return false;
-    return (!strcmp(model, "ultimo4k") || !strcmp(model, "duo4kse")) &&
-           !strcmp(mode, "passthrough");
+    /* OpenBH: prefixes, as the OpenBH version that works on these boxes */
+    return (!strncmp(model, "ultimo4k", 8) || !strncmp(model, "duo4kse", 7)) &&
+           !strncmp(mode, "passthrough", 11);
 }
 
 static long LinuxDvbElapsedMs(const struct timespec *since)
@@ -1143,17 +1143,14 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             }
             timing_after_switch = 1;
         }
-        /* the first audio start only, a loop restart plays on */
-        if (!eac3RestartChecked)
+        /* OpenBH: armed at every audio start, as the OpenBH version that
+         * works on the Vu+ Ultimo 4K / Duo 4K SE did */
+        eac3Restart = 0;
+        if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType && LinuxDvbEac3NeedsRestart())
         {
-            eac3RestartChecked = 1;
-            if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
-                !context->playback->isDash && LinuxDvbEac3NeedsRestart())
-            {
-                linuxdvb_printf(10, "DD+ passthrough start, audio restart armed\n");
-                clock_gettime(CLOCK_MONOTONIC, &eac3PlayTime);
-                eac3Restart = 1;
-            }
+            linuxdvb_printf(10, "DD+ passthrough start, audio restart armed\n");
+            clock_gettime(CLOCK_MONOTONIC, &eac3PlayTime);
+            eac3Restart = 1;
         }
         audioRunning = true;
         if (ioctl(audiofd, AUDIO_PLAY) < 0)
