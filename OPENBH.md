@@ -36,15 +36,20 @@ themselves, so `Makefile.am` passes `-include config.h` to every file.
   video and audio track so far, 32 bit and wrapping, `-1` when there is no
   such track. ServiceApp turns them into the kbit/s of `sVideoBitrate` /
   `sAudioBitrate` for the BitrateInfo converter.
-- **DD+ start restart on Vu+ Ultimo 4K / Duo 4K SE as in OpenBH.** The
-  first DD+ passthrough start on these boxes stays silent until the audio
-  output is restarted. skyjet arms that restart only at the first audio
-  start of a playback (not for DASH) and does it as a container switch to
-  the same track; with it native DD+ files stayed silent. OpenBH keeps its
-  own working version: armed at every audio start (`LinuxDvbPlay()` in
-  `output/linuxdvb_mipsel.c`), the model and mode compared by prefix, and
-  `Eac3PassthroughRestart()` in `main/exteplayer.c` switches the audio
-  output and then seeks by 0 s.
+- **DD+ workaround for Vu+ Ultimo 4K / Duo 4K SE as in OpenBH.** The
+  driver of these boxes leaves the first DD+ passthrough start silent until
+  the audio output is restarted, and setting the DD+ bypass mode again while
+  DD+ runs silences the HDMI output. OpenBH keeps its own working workaround
+  (OpenBH commits 4d2970e and 02397bd) instead of skyjet's version of it,
+  with which native DD+ files stayed silent at the start and DD+ -> DD+
+  switches went silent now and then:
+  - `output/linuxdvb_mipsel.c`: the restart is armed at every audio start
+    and due 100 ms after it once a DD+ packet is written
+    (`LinuxDvbEac3RestartState()`); `currentAudioBypass` and `eac3Settled`
+    decide that a DD+ -> DD+ switch only flushes the decoder; the model and
+    mode are compared by prefix.
+  - `main/exteplayer.c`: `Eac3PassthroughRestart()` switches the audio
+    output and then seeks by 0 s.
 - **DTS:X names as eServiceMP3.** `d` is `DTS-HD MA + DTS:X` and
   `DTS-HD MA + DTS:X IMAX` (skyjet: `DTS:X`, `DTS:X IMAX`).
 - **AC-4 description.** `d` is `Dolby AC-4` for AC-4 (skyjet: FFmpeg's

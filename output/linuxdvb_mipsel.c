@@ -468,18 +468,21 @@ out:
  * a track switch does, see LinuxDvbEac3RestartState().
  * 0 = none (always, on every other box), 1 = waiting for the first DD+
  * packet, 2 = packet written. */
+/* OpenBH: the DD+ workaround of the OpenBH version that works on these two
+ * models (OpenBH commits 4d2970e and 02397bd), not skyjet's version of it. */
 #define EAC3_RESTART_DELAY_MS 100
-#define EAC3_RESTART_FAST_POLL_MS 5000
 static volatile int eac3Restart = 0;
-static struct timespec eac3PlayTime;   /* set before the state becomes 1 */
-static struct timespec eac3PacketTime; /* set before the state becomes 2 */
+static struct timespec eac3PlayTime;
 
-/* Same two models: setting the DD+ bypass mode again while the decoder runs
- * DD+ passthrough reconfigures the HDMI output and leaves it silent. Set when
- * an audio switch has started the decoder in DD+ bypass mode on a box where
- * LinuxDvbEac3NeedsRestart() holds, cleared by every other start or bypass
- * mode: the next switch to a DD+ track then only flushes the decoder. */
-static int eac3BypassKept = 0;
+/* The audio bypass mode currently configured in the driver, and whether the
+ * DD+ passthrough start has already had its one un-sticking restart. Together
+ * they let a later DD+ -> DD+ track switch (native Atmos <-> transcoded
+ * TrueHD, both AUDIOTYPE_AC3_PLUS) keep the decoder running instead of
+ * re-setting the bypass mode, which reconfigures the HDMI output and silences
+ * the Vu+ Ultimo 4K / Duo 4K SE. The servicemp3 sink-bin fix avoids the same
+ * fault by dropping the redundant E-AC3 caps event. */
+static int currentAudioBypass = -1;
+static int eac3Settled = 0;
 
 /* Left, stereo or right of dual mono audio (two languages on L and R), an
  * OutputAudioChannel_t: the one asked for, and the one the decoder was last
@@ -662,21 +665,19 @@ static long LinuxDvbElapsedMs(const struct timespec *since)
     return (now.tv_sec - since->tv_sec) * 1000 + (now.tv_nsec - since->tv_nsec) / 1000000;
 }
 
-/* Polled by the command loop: 2 (once) when the restart is due, 1 while it
- * is expected within milliseconds, 0 otherwise. */
+/* Polled by the command loop: 1 while the restart waits, 2 (once) when it
+ * is due, 0 otherwise. (OpenBH) */
 int LinuxDvbEac3RestartState(void)
 {
-    int state = eac3Restart;
+    struct timespec now;
+    long elapsed;
 
-    if (0 == state)
-        return 0;
-    if (1 == state)
-    {
-        /* a stream that takes long to deliver its first DD+ packet is not
-         * polled fast for ever, the restart then comes with the next poll */
-        return LinuxDvbElapsedMs(&eac3PlayTime) < EAC3_RESTART_FAST_POLL_MS ? 1 : 0;
-    }
-    if (LinuxDvbElapsedMs(&eac3PacketTime) < EAC3_RESTART_DELAY_MS)
+    if (2 != eac3Restart)
+        return eac3Restart ? 1 : 0;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    elapsed = (now.tv_sec - eac3PlayTime.tv_sec) * 1000 + (now.tv_nsec - eac3PlayTime.tv_nsec) / 1000000;
+    if (elapsed < EAC3_RESTART_DELAY_MS)
         return 1;
 
     return __sync_bool_compare_and_swap(&eac3Restart, 2, 0) ? 2 : 0;
@@ -798,7 +799,7 @@ static void LinuxDvbDtsHdStart(Context_t *context, const uint8_t *data, size_t s
         if (LinuxDvbDtsHasHdExtension(data, size))
         {
             linuxdvb_printf(10, "DTS with HD extension, set bypass 0x%02x\n", AUDIOTYPE_DTS_HD);
-            eac3BypassKept = 0;
+            currentAudioBypass = AUDIOTYPE_DTS_HD;
             if (ioctl(audiofd, AUDIO_STOP, NULL) == -1)
             {
                 linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
@@ -1106,8 +1107,6 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
 
         writer = getWriter(Encoding);
         dts_hd_pending = writer && AUDIOTYPE_DTS == writer->caps->dvbStreamType && LinuxDvbDtsHdModeUsable();
-        /* the first switch after a start always restarts the decoder */
-        eac3BypassKept = 0;
         
         if (writer == NULL)
         {
@@ -1124,6 +1123,8 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
                 linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
                 ret = cERR_LINUXDVB_ERROR;
             }
+            else
+                currentAudioBypass = writer->caps->dvbStreamType;
         }
 
         if (context->playback->isDash)
@@ -1146,6 +1147,7 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
         /* OpenBH: armed at every audio start, as the OpenBH version that
          * works on the Vu+ Ultimo 4K / Duo 4K SE did */
         eac3Restart = 0;
+        eac3Settled = 0;
         if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType && LinuxDvbEac3NeedsRestart())
         {
             linuxdvb_printf(10, "DD+ passthrough start, audio restart armed\n");
@@ -1237,7 +1239,8 @@ static int LinuxDvbStopAudioLocked(void)
         ioctl(audiofd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
     }
     eac3Restart = 0;
-    eac3BypassKept = 0;
+    eac3Settled = 0;
+    currentAudioBypass = -1;
     return ret;
 }
 
@@ -1482,7 +1485,7 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
                 {
                     if (writer->reset)
                         writer->reset();
-                    eac3BypassKept = 0;
+                    currentAudioBypass = AUDIOTYPE_RAW;
                     if (ioctl(audiofd, AUDIO_SET_BYPASS_MODE,
                               LinuxDvbMapBypassMode(AUDIOTYPE_RAW, true)) < 0 &&
                         ioctl(audiofd, AUDIO_SET_BYPASS_MODE,
@@ -1594,7 +1597,6 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
     uint8_t video = !strcmp("video", type);
     Writer_t *writer;
     int ret = 0;
-    int keepEac3 = 0;
     bool eac3Box = false;
 
     linuxdvb_printf(10, "v%d a%d\n", video, audio);
@@ -1610,7 +1612,7 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
             }
         }
         /* reads /proc files: before the mutex is taken */
-        if (audio && audiofd != -1 && !context->playback->isDash)
+        if (audio && audiofd != -1)
             eac3Box = LinuxDvbEac3NeedsRestart();
         if (audio && audiofd != -1)
             (void)LinuxDvbDtsHdModeUsable();
@@ -1626,22 +1628,29 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                 writer = getWriter(Encoding);
                 dts_hd_pending = writer && AUDIOTYPE_DTS == writer->caps->dvbStreamType && LinuxDvbDtsHdModeUsable();
 
-                /* DD+ -> DD+ (native E-AC-3, DTS or TrueHD transcoded to
-                 * E-AC-3) on a Vu+ Ultimo 4K / Duo 4K SE whose decoder a switch
-                 * has already started in DD+ bypass mode: no stop and no new
-                 * bypass mode, which would silence the HDMI output, only the
-                 * old track is flushed. A paused decoder stays paused. */
-                if (eac3BypassKept && writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
-                    !context->playback->isDash)
+                /* OpenBH (02397bd): once DD+ passthrough is up and has had
+                 * its un-sticking restart, a later DD+ -> DD+ track switch
+                 * (native Atmos <-> transcoded TrueHD) must NOT stop the
+                 * decoder and re-set the bypass mode: that reconfigures the
+                 * HDMI output and leaves the Vu+ Ultimo 4K / Duo 4K SE silent.
+                 * The decoder is already in DD+ mode, so just flush the old
+                 * track and keep it running. The first switch after a DD+
+                 * start (eac3Settled == 0) still takes the full restart below,
+                 * which is what un-sticks that first start. */
+                if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
+                    AUDIOTYPE_AC3_PLUS == currentAudioBypass && eac3Settled && eac3Box)
                 {
-                    linuxdvb_printf(10, "DD+ -> DD+ switch, decoder kept running\n");
+                    linuxdvb_printf(10, "DD+ -> DD+ switch: flush only, decoder kept running\n");
                     if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
-                    {
                         linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
-                    }
+                    if (context->playback->isDash && writer->reset)
+                        writer->reset();
+                    eac3Restart = 0;
                     goto audio_switch_done;
                 }
-                eac3BypassKept = 0;
+
+                /* a switch is the restart the DD+ start was waiting for */
+                eac3Restart = 0;
 
                 /* a DASH switch that fails below leaves the decoder stopped */
                 audioRunning = false;
@@ -1695,7 +1704,9 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                     }
                     else
                     {
-                        keepEac3 = AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType && eac3Box;
+                        currentAudioBypass = writer->caps->dvbStreamType;
+                        if (AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
+                            eac3Settled = 1;
                     }
                 }
 
@@ -1717,7 +1728,6 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                 }
                 else
                 {
-                    eac3BypassKept = keepEac3;
                     /* the new codec can reset the left/right selection */
                     LinuxDvbRestoreAudioChannel();
                     /* AUDIO_PLAY starts the decoder: hold it again while the
@@ -2745,10 +2755,8 @@ static int Write(void  *_context, void *_out)
                 PosBoundWritten(&audioPosBound, out->pts);
             }
 
-            if (1 == eac3Restart && res >= 0 && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
+            if (res >= 0 && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
             {
-                /* the delay counts from the first DD+ packet */
-                clock_gettime(CLOCK_MONOTONIC, &eac3PacketTime);
                 __sync_bool_compare_and_swap(&eac3Restart, 1, 2);
             }
 
