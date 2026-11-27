@@ -24,10 +24,12 @@ themselves, so `Makefile.am` passes `-include config.h` to every file.
 ## Player
 
 - **Live channel count of passthrough audio.** The channels of AC-3,
-  E-AC-3 (independent substream 0, as eServiceMP3 counts them) and ADTS AAC
-  are read from the frame headers of a track that is not decoded, so a
-  change such as 5.1 programme audio to 2.0 in an ad break shows in `c` of
-  `a_c` and `a_l`. A change is taken after 3 packets in a row.
+  E-AC-3 and ADTS AAC are read from the frame headers of a track that is
+  not decoded, so a change such as 5.1 programme audio to 2.0 in an ad
+  break shows in `c` of `a_c` and `a_l`. For E-AC-3 the independent
+  substream 0 (or an AC-3 core) counts with the locations of the chanmap of
+  a dependent substream, so 7.1 (5.1 + Lrs/Rrs) is 8. A change is taken
+  after 3 packets in a row.
   (`audio_live_header_channels()` in `container/container_ffmpeg.c`.)
 - **Byte counters for a live bitrate.** The command `BR` answers
   `{"BR":{"v":<bytes>,"a":<bytes>}}`: the compressed bytes of the selected
@@ -43,6 +45,8 @@ themselves, so `Makefile.am` passes `-include config.h` to every file.
   `output/linuxdvb_mipsel.c`), the model and mode compared by prefix, and
   `Eac3PassthroughRestart()` in `main/exteplayer.c` switches the audio
   output and then seeks by 0 s.
+- **DTS:X names as eServiceMP3.** `d` is `DTS-HD MA + DTS:X` and
+  `DTS-HD MA + DTS:X IMAX` (skyjet: `DTS:X`, `DTS:X IMAX`).
 - **AC-4 description.** `d` is `Dolby AC-4` for AC-4 (skyjet: FFmpeg's
   name `ac4`).
 
