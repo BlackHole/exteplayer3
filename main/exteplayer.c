@@ -82,6 +82,7 @@ extern void stereo_software_decoder_set(int32_t val);
 extern void insert_pcm_as_lpcm_set(int32_t val);
 extern void progressive_playback_set(int32_t val);
 extern int LinuxDvbEac3RestartState(void);
+extern int container_ffmpeg_audio_info_generation(void);
 
 extern OutputHandler_t         OutputHandler;
 extern PlaybackHandler_t       PlaybackHandler;
@@ -577,6 +578,17 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
     {
         case 'l':
         {
+        	/* the audio list carries the live channel count and Atmos label:
+        	 * build it again when either has changed since it was cached */
+        	static int audio_cache_generation = -1;
+        	if ('a' == argvBuff[0] && ptrManager->tracks_cache != NULL &&
+        	    audio_cache_generation != container_ffmpeg_audio_info_generation())
+        	{
+        		strbuffer_free( ptrManager->tracks_cache );
+        		ptrManager->tracks_cache = NULL;
+        	}
+        	if ('a' == argvBuff[0] && ptrManager->tracks_cache == NULL)
+        		audio_cache_generation = container_ffmpeg_audio_info_generation();
         	if( ptrManager->tracks_cache == NULL )
         	{
         		/* read tracks info into cache */
