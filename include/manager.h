@@ -75,6 +75,7 @@ typedef struct Track_s {
     char                 *Description;
     char                 *OutputEncoding;
     int                   channels;
+    int                   channels_live;   /* channels taken from the stream itself, not the probe */
     int                   transcode_to_ac3;
     int                   transcode_to_aaclc;
     int                   is_forced;

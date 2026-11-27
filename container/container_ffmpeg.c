@@ -2247,6 +2247,15 @@ static int eac3_packet_has_atmos(const uint8_t *data, size_t size)
 #define EAC3_ATMOS_STALE_PACKETS   16
 #define EAC3_ATMOS_LOST_PACKETS    48
 
+/* Bumped when the live channel count or the Atmos state of the selected
+ * audio track changes, so the cached audio track list is built again. */
+static volatile int g_audio_info_generation = 0;
+
+int container_ffmpeg_audio_info_generation(void)
+{
+    return g_audio_info_generation;
+}
+
 static volatile int32_t g_eac3_atmos_track_id = -1;
 static volatile int     g_eac3_atmos_verdict  = -1; /* -1 unknown, 0 no, 1 yes */
 static unsigned int     g_eac3_atmos_pos      = 0;
@@ -2285,12 +2294,14 @@ static void eac3_atmos_feed(int32_t track_id, const uint8_t *data, size_t size)
     if (g_eac3_atmos_verdict != 1 && g_eac3_atmos_pos >= EAC3_ATMOS_CONFIRM_PACKETS)
     {
         g_eac3_atmos_verdict = 1;
+        ++g_audio_info_generation;
         ffmpeg_printf(1, "E-AC3 Atmos (JOC) detected on audio track %d\n", (int)track_id);
     }
     else if (g_eac3_atmos_verdict == 1 && g_eac3_atmos_neg >= EAC3_ATMOS_LOST_PACKETS)
     {
         g_eac3_atmos_verdict = 0;
         g_eac3_atmos_pos     = 0;
+        ++g_audio_info_generation;
         ffmpeg_printf(1, "E-AC3 Atmos (JOC) no longer present on audio track %d\n", (int)track_id);
     }
 }
@@ -2368,6 +2379,154 @@ static void eac3_diag_packet(int32_t track_id, int codec_id, const uint8_t *data
             fprintf(g_eac3_diag_txt, " addbsil=%u flag=%u complexity=%u", g_eac3_diag_addbsil, g_eac3_diag_flag, g_eac3_diag_complexity);
         fprintf(g_eac3_diag_txt, " verdict=%d\n", container_ffmpeg_audio_atmos_verdict(track_id));
         fflush(g_eac3_diag_txt);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Live channel count of passthrough audio. A track that is not decoded */
+/* only had the channel count of the open-time probe, so a change such  */
+/* as 5.1 programme audio to 2.0 in an ad break was never reported. It  */
+/* is read here from the headers of the AC-3 / E-AC-3 / ADTS AAC frames,*/
+/* as eServiceMP3 does: E-AC-3 from the independent substream 0 (acmod  */
+/* + lfeon), so 7.1 with a dependent substream reports its 5.1 core.    */
+/* ------------------------------------------------------------------ */
+static const unsigned int ac3_acmod_channels[8] = { 2, 1, 2, 3, 3, 4, 4, 5 };
+
+/* AC-3 (bsid <= 10) syncframe: acmod and lfeon from the bsi */
+static unsigned int ac3_frame_channels(const uint8_t *data, size_t size)
+{
+    eac3_bits_t br = { data, size, 0, 1 };
+    unsigned int bsid, acmod, lfeon;
+
+    if (!data || size < 8 || data[0] != 0x0b || data[1] != 0x77)
+        return 0;
+    eac3_bits_skip(&br, 16 + 16 + 2 + 6);       /* syncword, crc1, fscod, frmsizecod */
+    bsid  = eac3_bits_read(&br, 5);
+    eac3_bits_skip(&br, 3);                     /* bsmod */
+    acmod = eac3_bits_read(&br, 3);
+    if (!br.ok || bsid > 10)
+        return 0;
+    if ((acmod & 1) && acmod != 1)
+        eac3_bits_skip(&br, 2);                 /* cmixlev */
+    if (acmod & 4)
+        eac3_bits_skip(&br, 2);                 /* surmixlev */
+    if (acmod == 2)
+        eac3_bits_skip(&br, 2);                 /* dsurmod */
+    lfeon = eac3_bits_read(&br, 1);
+    return br.ok ? ac3_acmod_channels[acmod] + lfeon : 0;
+}
+
+/* E-AC-3 syncframe header: channels of an independent substream 0 frame,
+ * 0 for any other frame; *frame_size is set when the header is valid. */
+static unsigned int eac3_frame_channels(const uint8_t *data, size_t size, unsigned int *frame_size)
+{
+    eac3_bits_t br = { data, size, 0, 1 };
+    unsigned int frame_type, substreamid, sr_code, rate_or_blocks, acmod, lfeon, bsid;
+
+    *frame_size = 0;
+    if (!data || size < 7 || eac3_bits_read(&br, 16) != 0x0b77)
+        return 0;
+    frame_type     = eac3_bits_read(&br, 2);
+    substreamid    = eac3_bits_read(&br, 3);
+    *frame_size    = (eac3_bits_read(&br, 11) + 1) << 1;
+    sr_code        = eac3_bits_read(&br, 2);
+    rate_or_blocks = eac3_bits_read(&br, 2);    /* fscod2 or numblkscod */
+    acmod          = eac3_bits_read(&br, 3);
+    lfeon          = eac3_bits_read(&br, 1);
+    bsid           = eac3_bits_read(&br, 5);
+    if (!br.ok || frame_type == 3 || bsid <= 10 || bsid > 16 || (sr_code == 3 && rate_or_blocks == 3))
+    {
+        *frame_size = 0;
+        return 0;
+    }
+    if (frame_type == 1 || substreamid != 0)
+        return 0;                               /* dependent or other substream */
+    return ac3_acmod_channels[acmod] + lfeon;
+}
+
+/* Channels of the first independent frame of an AC-3 / E-AC-3 packet */
+static unsigned int ac3_packet_channels(const uint8_t *data, size_t size)
+{
+    size_t offset = 0;
+    unsigned int frame;
+
+    for (frame = 0; frame < 8 && offset + 8 <= size; ++frame)
+    {
+        const uint8_t *d = data + offset;
+        unsigned int frame_size = 0, channels;
+
+        if (d[0] != 0x0b || d[1] != 0x77)
+            break;
+        if ((d[5] >> 3) <= 10)
+            return ac3_frame_channels(d, size - offset);    /* AC-3, or the core of an E-AC-3 stream */
+        channels = eac3_frame_channels(d, size - offset, &frame_size);
+        if (channels)
+            return channels;
+        if (!frame_size || frame_size > size - offset)
+            break;
+        offset += frame_size;
+    }
+    return 0;
+}
+
+/* ADTS AAC: channel_configuration, 0 (a program config element) is unknown */
+static unsigned int adts_packet_channels(const uint8_t *data, size_t size)
+{
+    unsigned int config;
+
+    if (!data || size < 7 || data[0] != 0xFF || (data[1] & 0xF6) != 0xF0)
+        return 0;
+    config = ((data[2] & 0x01) << 2) | (data[3] >> 6);
+    if (config >= 1 && config <= 6)
+        return config;
+    return config == 7 ? 8 : 0;
+}
+
+/* a change is taken after this many packets in a row with the new count */
+#define AUDIO_CHANNELS_CONFIRM_PACKETS 3
+
+static int32_t      g_live_channels_track_id  = -1;
+static unsigned int g_live_channels_candidate = 0;
+static unsigned int g_live_channels_count     = 0;
+
+static void audio_channels_hook(Track_t *track, int codec_id, const uint8_t *data, size_t size)
+{
+    unsigned int channels = 0;
+
+    if (codec_id == AV_CODEC_ID_AC3 || codec_id == AV_CODEC_ID_EAC3)
+        channels = ac3_packet_channels(data, size);
+    else if (codec_id == AV_CODEC_ID_AAC)
+        channels = adts_packet_channels(data, size);
+
+    if (track->Id != g_live_channels_track_id)
+    {
+        g_live_channels_track_id  = track->Id;
+        g_live_channels_candidate = 0;
+        g_live_channels_count     = 0;
+    }
+    if (!channels)
+        return;
+
+    if (channels == g_live_channels_candidate)
+    {
+        if (g_live_channels_count < AUDIO_CHANNELS_CONFIRM_PACKETS)
+            ++g_live_channels_count;
+    }
+    else
+    {
+        g_live_channels_candidate = channels;
+        g_live_channels_count     = 1;
+    }
+
+    if (g_live_channels_count >= AUDIO_CHANNELS_CONFIRM_PACKETS)
+    {
+        if (track->channels != (int)channels)
+        {
+            ffmpeg_printf(1, "audio channels of track %d changed %d -> %u\n", (int)track->Id, track->channels, channels);
+            track->channels = (int)channels;
+            ++g_audio_info_generation;
+        }
+        track->channels_live = 1;
     }
 }
 
@@ -3070,6 +3229,11 @@ static void FFMPEGThread(Context_t *context)
                 /* live Atmos (JOC) detection on the selected E-AC-3 track */
                 if (packet.data && packet.size > 0)
                     audio_atmos_hook(audioTrack->Id, (int)get_codecpar(audioTrack->stream)->codec_id, packet.data, (size_t)packet.size);
+                /* live channel count of passthrough audio; a decoded or
+                 * transcoded track takes it from the decoded frames */
+                if (packet.data && packet.size > 0 && audioTrack->inject_as_pcm != 1 && audioTrack->inject_raw_pcm != 1 &&
+                    !audioTrack->transcode_to_ac3 && !audioTrack->transcode_to_aaclc)
+                    audio_channels_hook(audioTrack, (int)get_codecpar(audioTrack->stream)->codec_id, packet.data, (size_t)packet.size);
                 if (audioTrack->inject_raw_pcm != 1 && audioTrack->inject_as_pcm != 1 &&
                     (get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC ||
                      get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC_LATM))
@@ -3254,7 +3418,10 @@ static void FFMPEGThread(Context_t *context)
                             ffmpeg_printf(10, "audio channel count changed %d -> %d\n",
                                 audioTrack->channels, decoded_channels);
                             audioTrack->channels = decoded_channels;
+                            ++g_audio_info_generation;
                         }
+                        if (decoded_channels > 0)
+                            audioTrack->channels_live = 1;
                         if (audioTrack->transcode_to_ac3)
                         {
                             if (AC3TranscoderProcess(&ac3Transcoder, context, c, audioTrack, decoded_frame, cAVIdx, pts) < 0)

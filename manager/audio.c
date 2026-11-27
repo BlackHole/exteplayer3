@@ -92,12 +92,15 @@ static int ManagerAdd(Context_t  *context, Track_t track) {
     {
         if (Tracks[i].Id == track.Id)
         {
-            /* a software decoded / transcoded track keeps the channel count
-             * of the decoded frames, the probe value can be outdated */
-            int live_channels = Tracks[i].avCodecCtx ? Tracks[i].channels : 0;
+            /* keep the channel count read from the stream (decoded frames or
+             * the packet headers), the probe value can be outdated */
+            int live_channels = Tracks[i].channels_live ? Tracks[i].channels : 0;
             replaceTrack(&Tracks[i], &track);
             if (live_channels > 0)
+            {
                 Tracks[i].channels = live_channels;
+                Tracks[i].channels_live = 1;
+            }
             Tracks[i].pending = 0;
             return cERR_AUDIO_MGR_NO_ERROR;
         }
