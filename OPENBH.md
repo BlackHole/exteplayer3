@@ -1,7 +1,7 @@
 # OpenBH changes on top of skyjet18/exteplayer3
 
 This tree is [skyjet18/exteplayer3](https://github.com/skyjet18/exteplayer3)
-(version 187, commit 31f3edb) with the few additions below. Keep them small
+(version 188, commit e427bf7) with the few additions below. Keep them small
 and self-contained so that skyjet updates merge without much work; skyjet's
 own documentation is in README.md.
 
@@ -14,6 +14,8 @@ themselves, so `Makefile.am` passes `-include config.h` to every file.
 
 - `--enable-dreamnextgen` (set by OE-A for the Dreambox One/Two) builds
   `output/dream_video.c` and defines `HAVE_DREAMNEXTGEN`; no ALSA is needed.
+- The version is `EXTEPLAYER3_VERSION` in `include/version.h` (skyjet);
+  `AC_INIT` in `configure.ac` has to be set to the same number.
 - New source files of skyjet must be added to `exteplayer3_SOURCES` in
   `Makefile.am`. Files in `container/` other than `container.c` and
   `container_ffmpeg.c` are included by `container_ffmpeg.c` and are not
